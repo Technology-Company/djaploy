@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List
 
+from django.conf import settings
 from pyinfra import host
 from pyinfra.operations import apt, server, pip, files
 from pyinfra.facts.server import Which
@@ -20,13 +21,22 @@ class CoreModule(BaseModule):
     description = "Core server configuration and deployment"
     version = "0.1.0"
     
-    def configure_server(self, host_data: Dict[str, Any], project_config: Any):
+    def get_required_imports(self) -> List[str]:
+        """Get required import statements for this module"""
+        return [
+            "from pyinfra import host",
+            "from pyinfra.operations import apt, server, pip, files",
+            "from pyinfra.facts.server import Which",
+            "from pathlib import Path",
+        ]
+    
+    def configure_server(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Configure basic server requirements"""
         
         # Create application user
         server.user(
             name="Create application user",
-            user=host_data["app_user"],
+            user=host_data.app_user,
             shell="/bin/bash",
             create_home=True,
             _sudo=True,
@@ -47,7 +57,7 @@ class CoreModule(BaseModule):
             packages=["poetry"],
             extra_install_args="--break-system-packages",
             _sudo=True,
-            _sudo_user=host_data["app_user"],
+            _sudo_user=host_data.app_user,
             _use_sudo_login=True,
         )
         
@@ -58,12 +68,12 @@ class CoreModule(BaseModule):
             _sudo=True,
         )
     
-    def _install_python(self, host_data: Dict[str, Any], project_config: Any):
+    def _install_python(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Install Python based on configuration"""
         
-        python_version = project_config.python_version
+        python_version = project_config["python_version"]
         
-        if project_config.python_compile:
+        if project_config.get("python_compile", False):
             self._compile_python(python_version, host_data)
         else:
             apt.packages(
@@ -159,12 +169,12 @@ class CoreModule(BaseModule):
                 _sudo=False,
             )
     
-    def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
+    def deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
         """Deploy the application"""
         
-        app_user = host_data["app_user"]
-        ssh_user = host_data["ssh_user"]
-        app_name = project_config.project_name
+        app_user = host_data.app_user
+        ssh_user = host_data.ssh_user
+        app_name = project_config["project_name"]
         app_path = f"/home/{app_user}/apps/{app_name}"
         
         # Create necessary directories
@@ -201,23 +211,33 @@ class CoreModule(BaseModule):
         )
         
         # Deploy configuration files if specified
-        if project_config.deploy_files_dir:
-            deploy_files_path = Path(app_path) / project_config.deploy_files_dir / host_data["env"]
-            if deploy_files_path.exists():
-                server.shell(
-                    name="Deploy configuration files",
-                    commands=[
-                        f"cp -r {deploy_files_path}/* /",
-                    ],
-                    _sudo=True,
-                )
+        server.shell(
+            name="Put deploy files (NGINX, systemd) in place on remote",
+            commands=[
+                f"cp -r {settings.DJAPLOY_CONFIG_DIR}/deploy_files/{host_data.env}/* /",
+            ],
+            _sudo=True,
+        )
+
+        server.shell(
+            name="Clear default NGINX site and enable application sites",
+            commands=[
+                "rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default",
+                "ln -fs /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
+            ],
+            _sudo=True,
+        )
+        
+        # Generate SSL certificates if enabled
+        if getattr(host_data, 'pregenerate_certificates', False):
+            self._generate_ssl_certificates(host_data, app_user)
         
         # Install dependencies and run migrations
         self._install_dependencies(app_user, app_path, project_config)
         self._run_migrations(app_user, app_path, project_config)
         self._collect_static(app_user, app_path, project_config)
     
-    def _install_dependencies(self, app_user: str, app_path: str, project_config: Any):
+    def _install_dependencies(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Install Python dependencies using Poetry"""
         
         server.shell(
@@ -231,7 +251,7 @@ class CoreModule(BaseModule):
             _chdir=app_path,
         )
     
-    def _run_migrations(self, app_user: str, app_path: str, project_config: Any):
+    def _run_migrations(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Run Django database migrations"""
         
         manage_py = self._get_manage_py_path(app_path, project_config)
@@ -247,7 +267,7 @@ class CoreModule(BaseModule):
                 _chdir=app_path,
             )
     
-    def _collect_static(self, app_user: str, app_path: str, project_config: Any):
+    def _collect_static(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Collect static files"""
         
         manage_py = self._get_manage_py_path(app_path, project_config)
@@ -263,11 +283,64 @@ class CoreModule(BaseModule):
                 _chdir=app_path,
             )
     
-    def _get_manage_py_path(self, app_path: str, project_config: Any) -> str:
+    def _generate_ssl_certificates(self, host_data, app_user: str):
+        """Generate SSL certificates for testing/development purposes"""
+        
+        # Install openssl if not already installed
+        apt.packages(
+            name="Install OpenSSL for certificate generation",
+            packages=["openssl"],
+            _sudo=True,
+        )
+        
+        # Create SSL directory
+        files.directory(
+            name="Create SSL directory",
+            path=f"/home/{app_user}/.ssl",
+            user=app_user,
+            group=app_user,
+            _sudo=True,
+        )
+        
+        # Generate domains to create certificates for
+        domains = getattr(host_data, 'domains', [])
+        if not domains:
+            # Default to app_hostname if no domains specified
+            app_hostname = getattr(host_data, 'app_hostname', 'localhost')
+            domains = [app_hostname]
+        
+        for domain in domains:
+            # Handle different domain formats (string or dict)
+            if isinstance(domain, dict):
+                domain_name = domain.get('identifier', domain.get('name', 'localhost'))
+                alt_names = domain.get('domains', [domain_name])
+            else:
+                domain_name = str(domain)
+                alt_names = [domain_name]
+            
+            # Create certificate and key paths
+            cert_path = f"/home/{app_user}/.ssl/{domain_name}.crt"
+            key_path = f"/home/{app_user}/.ssl/{domain_name}.key"
+            
+            # Generate self-signed certificate
+            server.shell(
+                name=f"Generate self-signed SSL certificate for {domain_name}",
+                commands=[
+                    f"openssl req -x509 -newkey rsa:4096 -keyout {key_path} -out {cert_path} "
+                    f"-days 365 -nodes -subj '/CN={domain_name}' "
+                    f"-addext 'subjectAltName=DNS:{',DNS:'.join(alt_names)}'",
+                    f"chown {app_user}:{app_user} {cert_path} {key_path}",
+                    f"chmod 600 {key_path}",
+                    f"chmod 644 {cert_path}",
+                ],
+                _sudo=True,
+            )
+
+    def _get_manage_py_path(self, app_path: str, project_config: Dict[str, Any]) -> str:
         """Get the manage.py path from config"""
         
-        if hasattr(project_config, 'manage_py_path') and project_config.manage_py_path:
-            return str(project_config.manage_py_path)
+        if project_config.get("manage_py_path"):
+            return str(project_config["manage_py_path"])
         
         return None
     

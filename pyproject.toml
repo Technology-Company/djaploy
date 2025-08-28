@@ -1,0 +1,55 @@
+[project]
+name = "djaploy"
+version = "0.1.0"
+description = "Modular Django deployment system based on pyinfra"
+authors = [
+    {name = "djaploy contributors", email = "admin@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["django", "deployment", "pyinfra", "automation", "infrastructure"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Django",
+    "Framework :: Django :: 3.2",
+    "Framework :: Django :: 4.0",
+    "Framework :: Django :: 4.1", 
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Systems Administration",
+]
+
+dependencies = [
+    "pyinfra>=3.0",
+    "django>=3.2",
+]
+
+[project.optional-dependencies]
+certificates = ["certbot>=2.0"]
+bunny = ["certbot-dns-bunny>=0.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/your-org/djaploy"
+Repository = "https://github.com/your-org/djaploy"
+Issues = "https://github.com/your-org/djaploy/issues"
+Documentation = "https://github.com/your-org/djaploy#readme"
+
+[tool.setuptools]
+packages = ["djaploy"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -2,10 +2,11 @@
 Django management command for configuring servers
 """
 
+import os
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import configure_server as djaploy_configure
-from djaploy.management.utils import load_config, load_inventory
+from djaploy.management.utils import load_config
 
 
 class Command(BaseCommand):
@@ -36,21 +37,18 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         env = options["env"]
         
-        # Load djaploy configuration
         config = load_config(options["config"])
         
-        # Use inventory directory from config or override
         inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
         
-        # Load inventory for the environment
-        hosts = load_inventory(inventory_dir, env)
+        inventory_file = f"{inventory_dir}/{env}.py"
         
-        if not hosts:
-            raise CommandError(f"No hosts found in inventory for environment '{env}'")
+        if not os.path.exists(inventory_file):
+            raise CommandError(f"Inventory file not found: {inventory_file}")
         
         # Run configuration
         try:
-            djaploy_configure(config, hosts, env=env)
+            djaploy_configure(config, inventory_file)
             self.stdout.write(
                 self.style.SUCCESS(f"Successfully configured servers for {env}")
             )

@@ -24,14 +24,15 @@ def load_config(config_file: str = None) -> DjaployConfig:
     else:
         # Check settings for config file location
         if hasattr(settings, 'DJAPLOY_CONFIG_DIR'):
-            config_path = Path(settings.DJAPLOY_CONFIG_DIR + 'config.py')
-            if not config_path.is_absolute():
-                config_path = base_dir / config_path
+            djaploy_dir = Path(settings.DJAPLOY_CONFIG_DIR)
+            if not djaploy_dir.is_absolute():
+                djaploy_dir = base_dir / djaploy_dir
+            config_path = djaploy_dir / 'config.py'
         else:
             config_path = None
             
-            if not config_path:
-                raise CommandError("No djaploy configuration file found. Create one or specify --config")
+        if not config_path:
+            raise CommandError("No djaploy configuration file found. Create one or specify --config")
     
     if not config_path.exists():
         raise CommandError(f"Configuration file not found: {config_path}")

@@ -22,6 +22,16 @@ class BaseModule(ABC):
         """Initialize the module with configuration"""
         self.config = config or {}
     
+    def get_required_imports(self) -> List[str]:
+        """
+        Get list of import statements required for this module.
+        Override this in subclasses to specify imports needed.
+        
+        Returns:
+            List of import statements as strings
+        """
+        return []
+    
     @abstractmethod
     def configure_server(self, host_data: Dict[str, Any], project_config: Any):
         """

@@ -2,9 +2,28 @@
 Configuration management for djaploy
 """
 
+import typing
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, get_origin
 from pathlib import Path
+
+
+class HostConfigMetaclass(type):
+    def __new__(cls, name, bases, attrs):
+        dict_typing = attrs.get("__annotations__", {})
+        defaults = {
+            key: attrs.pop(key) for key, value in list(attrs.items()) 
+            if not key.startswith("_") and not callable(value) and key not in dict_typing
+        }
+        attrs["_dict_annotations"] = dict_typing
+        attrs["_dict_defaults"] = defaults
+        return super().__new__(cls, name, bases, attrs)
+
+
+def is_optional(field):
+    """Check if a type hint is Optional"""
+    return typing.get_origin(field) is typing.Union and \
+           type(None) in typing.get_args(field)
 
 
 @dataclass
@@ -30,7 +49,7 @@ class DjaployConfig:
     
     # Modules to enable
     modules: List[str] = field(default_factory=lambda: [
-        "djaploy.modules.base",
+        "djaploy.modules.core",
         "djaploy.modules.nginx", 
         "djaploy.modules.systemd"
     ])
@@ -42,15 +61,9 @@ class DjaployConfig:
     artifact_dir: str = "deployment"
     
     # SSL settings
+    ssl_enabled: bool = False
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
-    
-    # Services
-    services: List[str] = field(default_factory=list)
-    timer_services: List[str] = field(default_factory=list)
-    
-    # Hosts (if configured, used to add required modules)
-    hosts: Optional[List["HostConfig"]] = None
     
     def __post_init__(self):
         """Post-initialization processing"""
@@ -69,13 +82,9 @@ class DjaployConfig:
         if self.manage_py_path is not None:
             self.manage_py_path = Path(self.manage_py_path)
         
-        # Add required modules from hosts
-        if self.hosts:
-            for host in self.hosts:
-                if hasattr(host, 'get_required_modules'):
-                    for module in host.get_required_modules():
-                        if module not in self.modules:
-                            self.modules.append(module)
+        # Add SSL module if SSL is enabled
+        if self.ssl_enabled and "djaploy.modules.ssl" not in self.modules:
+            self.modules.append("djaploy.modules.ssl")
     
     def get_deploy_files_dir(self) -> Path:
         """Get the deploy_files directory path"""
@@ -154,62 +163,64 @@ class BackupConfig:
         return True
 
 
-@dataclass
-class HostConfig:
-    """Configuration for a deployment host"""
+class HostConfig(tuple, metaclass=HostConfigMetaclass):
+    """
+    Configuration for a deployment host.
+    Creates pyinfra-compatible tuples (hostname, host_data).
+    """
     
-    name: str
-    ssh_host: str
+    # Type annotations for the metaclass
+    ssh_hostname: str
     ssh_user: str = "deploy"
-    ssh_port: int = 22
+    ssh_port: Optional[int] = 22
+    ssh_key: Optional[str] = None
+    _sudo_password: Optional[str] = None
     
     app_user: str = "app"
     app_hostname: Optional[str] = None
     
-    env: str = "production"  # Environment name
-    
     # Services to manage on this host
-    services: List[str] = field(default_factory=list)
-    timer_services: List[str] = field(default_factory=list)
+    services: Optional[List[str]] = None
+    timer_services: Optional[List[str]] = None
     
     # Domain configurations
-    domains: List[Dict[str, Any]] = field(default_factory=list)
+    domains: Optional[List[Dict[str, Any]]] = None
+    
+    pregenerate_certificates: bool = False
     
     # Backup configuration for this host
     backup: Optional[BackupConfig] = None
     
     # Additional host-specific data
-    data: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_pyinfra_host(self):
-        """Convert to pyinfra host format"""
-        return {
-            "name": self.name,
-            "ssh_host": self.ssh_host,
-            "ssh_user": self.ssh_user,
-            "ssh_port": self.ssh_port,
-            "data": {
-                "app_user": self.app_user,
-                "app_hostname": self.app_hostname or self.ssh_host,
-                "env": self.env,
-                "services": self.services,
-                "timer_services": self.timer_services,
-                "domains": self.domains,
-                "backup": asdict(self.backup) if self.backup else None,
-                **self.data
-            }
-        }
-    
-    def get_required_modules(self) -> List[str]:
-        """Get list of modules required for this host based on its configuration"""
-        modules = []
-        
-        # Add rclone module if backup is configured
-        if self.backup and self.backup.enabled:
-            modules.append("djaploy.modules.rclone")
-        
-        # Add litestream module if configured (future)
-        # if self.litestream:
-        #     modules.append("djaploy.modules.litestream")
-        
-        return modules
+    data: Optional[Dict[str, Any]] = None
+
+    def __new__(cls, name: str, **kwargs):
+        dict_typing = cls._dict_annotations
+        dict_defaults = cls._dict_defaults.copy()
+
+        config = {}
+        for key, type_hint in dict_typing.items():
+            default = dict_defaults.pop(key, None)
+            value = kwargs.pop(key, None)
+            if value is None and default is not None:
+                value = default
+            if value is None and is_optional(type_hint):
+                continue
+            if value is None:
+                raise ValueError(f"Missing required key: {key}")
+            config[key] = value
+
+        # Add any remaining defaults
+        for key in dict_defaults:
+            config[key] = dict_defaults[key]
+
+        # Add any extra kwargs
+        for key in kwargs:
+            config[key] = kwargs[key]
+
+        # Expand SSH key path if provided
+        if config.get("ssh_key"):
+            import os
+            config["ssh_key"] = os.path.expanduser(config["ssh_key"])
+
+        return super().__new__(cls, (name, config))

@@ -13,37 +13,45 @@ from .modules import load_modules
 from .artifact import create_artifact
 
 
-def configure_server(config: DjaployConfig, hosts: List[HostConfig], **kwargs):
+def configure_server(config: DjaployConfig, inventory_file: str, **kwargs):
     """
     Configure servers for deployment
     
     Args:
         config: DjaployConfig instance
-        hosts: List of HostConfig instances
+        inventory_file: Path to the pyinfra inventory file
         **kwargs: Additional arguments
     """
     
     # Validate configuration
     config.validate()
     
-    # Load modules (including host-specific modules)
-    modules = load_modules(config.modules, config.module_configs, hosts)
+    # Load modules
+    modules = load_modules(config.modules, config.module_configs)
+    
+    # Pre-process inventory file to convert HostConfig objects to tuples
+    processed_inventory_file = _preprocess_inventory(inventory_file)
     
     # Create pyinfra deployment script
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(_generate_configure_script(config, hosts, modules))
+        f.write(_generate_configure_script(config, modules))
         script_path = f.name
     
     try:
-        # Run pyinfra
-        _run_pyinfra(script_path, hosts)
+        # Extract environment from inventory filename
+        env_name = Path(inventory_file).stem
+        
+        # Run pyinfra with environment data
+        _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
     finally:
         # Clean up
         os.unlink(script_path)
+        if processed_inventory_file != inventory_file:
+            os.unlink(processed_inventory_file)
 
 
 def deploy_project(config: DjaployConfig, 
-                  hosts: List[HostConfig],
+                  inventory_file: str,
                   mode: str = "latest",
                   release_tag: Optional[str] = None,
                   **kwargs):
@@ -52,7 +60,7 @@ def deploy_project(config: DjaployConfig,
     
     Args:
         config: DjaployConfig instance
-        hosts: List of HostConfig instances
+        inventory_file: Path to the pyinfra inventory file
         mode: Deployment mode ("local", "latest", "release")
         release_tag: Release tag if mode is "release"
         **kwargs: Additional arguments
@@ -68,47 +76,91 @@ def deploy_project(config: DjaployConfig,
         release_tag=release_tag
     )
     
-    # Load modules (including host-specific modules)
-    modules = load_modules(config.modules, config.module_configs, hosts)
+    # Load modules
+    modules = load_modules(config.modules, config.module_configs)
+    
+    # Pre-process inventory file to convert HostConfig objects to tuples
+    processed_inventory_file = _preprocess_inventory(inventory_file)
     
     # Run prepare script if it exists
-    prepare_script = config.project_dir / "prepare.py"
+    prepare_script = config.djaploy_dir / "prepare.py"
     if prepare_script.exists():
         _run_prepare(prepare_script, config)
     
     # Create pyinfra deployment script
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(_generate_deploy_script(config, hosts, modules, artifact_path))
+        f.write(_generate_deploy_script(config, modules, artifact_path))
         script_path = f.name
     
     try:
-        # Run pyinfra
-        _run_pyinfra(script_path, hosts)
+        # Extract environment from inventory filename
+        env_name = Path(inventory_file).stem
+        
+        # Run pyinfra with environment data
+        _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
     finally:
         # Clean up
         os.unlink(script_path)
+        if processed_inventory_file != inventory_file:
+            os.unlink(processed_inventory_file)
 
 
-def _generate_configure_script(config: DjaployConfig, 
-                               hosts: List[HostConfig],
-                               modules: List) -> str:
+def _generate_configure_script(config: DjaployConfig, modules: List) -> str:
     """Generate pyinfra configuration script"""
     
-    script = """
-from pyinfra import host
-
-# Import module implementations
+    # Collect all unique imports from modules
+    all_imports = set()
+    for module in modules:
+        if hasattr(module, 'get_required_imports'):
+            all_imports.update(module.get_required_imports())
+    
+    # Start building the script
+    script = "# Auto-generated pyinfra deployment script\n\n"
+    
+    # Add all collected imports
+    if all_imports:
+        script += "# Required imports from modules\n"
+        for import_stmt in sorted(all_imports):
+            script += f"{import_stmt}\n"
+    else:
+        # Default imports if no modules specify them
+        script += """from pyinfra import host
+from pyinfra.operations import apt, server, pip, files, systemd
+from pyinfra.facts.server import Which
+from pathlib import Path
 """
+    
+    script += "\n# Import module implementations\n"
     
     # Add module imports
     for module in modules:
         module_path = module.__class__.__module__
         script += f"from {module_path} import {module.__class__.__name__}\n"
     
-    script += """
-# Get configuration from host data
-config = host.data.config
-project_config = host.data.project_config
+    script += f"""
+# Get configuration from djaploy config
+import sys
+sys.path.insert(0, '{config.djaploy_dir}')
+from config import config as djaploy_config
+
+# Create project config dict for modules
+project_config = {{
+    "project_name": djaploy_config.project_name,
+    "project_dir": str(djaploy_config.project_dir) if djaploy_config.project_dir else None,
+    "git_dir": str(djaploy_config.git_dir) if djaploy_config.git_dir else None,
+    "djaploy_dir": str(djaploy_config.djaploy_dir) if djaploy_config.djaploy_dir else None,
+    "manage_py_path": str(djaploy_config.manage_py_path) if djaploy_config.manage_py_path else None,
+    "app_user": djaploy_config.app_user,
+    "ssh_user": djaploy_config.ssh_user,
+    "python_version": djaploy_config.python_version,
+    "python_compile": djaploy_config.python_compile,
+    "modules": djaploy_config.modules,
+    "module_configs": djaploy_config.module_configs,
+    "artifact_dir": djaploy_config.artifact_dir,
+    "ssl_enabled": djaploy_config.ssl_enabled,
+    "ssl_cert_path": djaploy_config.ssl_cert_path,
+    "ssl_key_path": djaploy_config.ssl_key_path,
+}}
 
 # Run module configurations
 """
@@ -127,17 +179,33 @@ module.post_configure(host.data, project_config)
 
 
 def _generate_deploy_script(config: DjaployConfig,
-                           hosts: List[HostConfig], 
                            modules: List,
                            artifact_path: Path) -> str:
     """Generate pyinfra deployment script"""
     
-    script = """
-from pyinfra import host
+    # Collect all unique imports from modules
+    all_imports = set()
+    for module in modules:
+        if hasattr(module, 'get_required_imports'):
+            all_imports.update(module.get_required_imports())
+    
+    # Start building the script
+    script = "# Auto-generated pyinfra deployment script\n\n"
+    
+    # Add all collected imports
+    if all_imports:
+        script += "# Required imports from modules\n"
+        for import_stmt in sorted(all_imports):
+            script += f"{import_stmt}\n"
+    else:
+        # Default imports if no modules specify them
+        script += """from pyinfra import host
+from pyinfra.operations import apt, server, pip, files, systemd
+from pyinfra.facts.server import Which
 from pathlib import Path
-
-# Import module implementations
 """
+    
+    script += "\n# Import module implementations\n"
     
     # Add module imports
     for module in modules:
@@ -145,9 +213,30 @@ from pathlib import Path
         script += f"from {module_path} import {module.__class__.__name__}\n"
     
     script += f"""
-# Get configuration from host data
-config = host.data.config
-project_config = host.data.project_config
+# Get configuration from djaploy config
+import sys
+sys.path.insert(0, '{config.djaploy_dir}')
+from config import config as djaploy_config
+
+# Create project config dict for modules
+project_config = {{
+    "project_name": djaploy_config.project_name,
+    "project_dir": str(djaploy_config.project_dir) if djaploy_config.project_dir else None,
+    "git_dir": str(djaploy_config.git_dir) if djaploy_config.git_dir else None,
+    "djaploy_dir": str(djaploy_config.djaploy_dir) if djaploy_config.djaploy_dir else None,
+    "manage_py_path": str(djaploy_config.manage_py_path) if djaploy_config.manage_py_path else None,
+    "app_user": djaploy_config.app_user,
+    "ssh_user": djaploy_config.ssh_user,
+    "python_version": djaploy_config.python_version,
+    "python_compile": djaploy_config.python_compile,
+    "modules": djaploy_config.modules,
+    "module_configs": djaploy_config.module_configs,
+    "artifact_dir": djaploy_config.artifact_dir,
+    "ssl_enabled": djaploy_config.ssl_enabled,
+    "ssl_cert_path": djaploy_config.ssl_cert_path,
+    "ssl_key_path": djaploy_config.ssl_key_path,
+}}
+
 artifact_path = Path("{artifact_path}")
 
 # Run module deployments
@@ -166,42 +255,89 @@ module.post_deploy(host.data, project_config, artifact_path)
     return script
 
 
-def _run_pyinfra(script_path: str, hosts: List[HostConfig]):
-    """Run pyinfra with the generated script"""
+def _run_pyinfra(script_path: str, inventory_path: str, data: dict = None):
+    """Run pyinfra with the generated script and inventory using django_pyinfra wrapper"""
     
-    # Create inventory
-    inventory = _create_inventory(hosts)
+    # Use djaploy's built-in django_pyinfra wrapper
+    import djaploy
+    djaploy_path = Path(djaploy.__file__).parent
+    django_pyinfra_path = djaploy_path / "bin" / "django_pyinfra.py"
+
+    env = os.environ.copy()
+
+    from django.conf import settings
+    project_dir = str(settings.BASE_DIR)
+
+    current_python_path = env.get('PYTHONPATH', '')
+    if current_python_path:
+        env['PYTHONPATH'] = f"{project_dir}:{current_python_path}"
+    else:
+        env['PYTHONPATH'] = project_dir
     
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(inventory)
-        inventory_path = f.name
+    cmd = [
+        "python",
+        str(django_pyinfra_path),
+        "-y",
+    ]
     
+    # Add data parameters if provided
+    if data:
+        for key, value in data.items():
+            cmd.extend(["--data", f"{key}={value}"])
+    
+    cmd.extend([inventory_path, script_path])
+    
+    subprocess.run(cmd, check=True, env=env)
+
+
+
+def _preprocess_inventory(inventory_file: str) -> str:
+    """
+    Pre-process inventory file to convert HostConfig objects to pyinfra tuples
+    
+    Returns path to processed inventory file
+    """
+    # Import the inventory module to evaluate HostConfig objects
+    import sys
+    import importlib.util
+    from pathlib import Path
+    
+    spec = importlib.util.spec_from_file_location("inventory", inventory_file)
+    inventory_module = importlib.util.module_from_spec(spec)
+    
+    # Add djaploy to the module's namespace so it can import HostConfig
+    original_path = sys.path[:]
     try:
-        # Run pyinfra command
-        cmd = [
-            "pyinfra",
-            inventory_path,
-            script_path,
-            "-y",  # Auto-yes
-        ]
+        sys.modules['inventory'] = inventory_module
+        spec.loader.exec_module(inventory_module)
         
-        subprocess.run(cmd, check=True)
+        # Get the hosts from the module
+        hosts = getattr(inventory_module, 'hosts', [])
+        
+        # Convert HostConfig objects to tuples and build new inventory content
+        processed_hosts = []
+        for host in hosts:
+            if hasattr(host, '__iter__') and len(host) == 2:
+                # Already a tuple (connection_string, host_data)
+                processed_hosts.append(host)
+            else:
+                # Assume it's a HostConfig that needs conversion
+                processed_hosts.append(host)
+                
+        # Create processed inventory file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("# Auto-processed inventory file\n\n")
+            f.write("hosts = [\n")
+            for host in processed_hosts:
+                f.write(f"    {repr(host)},\n")
+            f.write("]\n")
+            
+            return f.name
+            
     finally:
-        os.unlink(inventory_path)
-
-
-def _create_inventory(hosts: List[HostConfig]) -> str:
-    """Create pyinfra inventory from host configurations"""
-    
-    inventory = "hosts = [\n"
-    
-    for host_config in hosts:
-        host_dict = host_config.to_pyinfra_host()
-        inventory += f"    {host_dict},\n"
-    
-    inventory += "]\n"
-    
-    return inventory
+        sys.path[:] = original_path
+        if 'inventory' in sys.modules:
+            del sys.modules['inventory']
 
 
 def _run_prepare(prepare_script: Path, config: DjaployConfig):

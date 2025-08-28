@@ -2,10 +2,11 @@
 Django management command for deploying applications
 """
 
+import os
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import deploy_project as djaploy_deploy
-from djaploy.management.utils import load_config, load_inventory
+from djaploy.management.utils import load_config
 
 
 class Command(BaseCommand):
@@ -60,6 +61,13 @@ class Command(BaseCommand):
         # Use inventory directory from config or override
         inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
         
+        # Build inventory file path
+        inventory_file = f"{inventory_dir}/{env}.py"
+        
+        # Check if inventory file exists
+        if not os.path.exists(inventory_file):
+            raise CommandError(f"Inventory file not found: {inventory_file}")
+        
         # Determine deployment mode
         if options["local"]:
             mode = "local"
@@ -73,12 +81,6 @@ class Command(BaseCommand):
         else:
             raise CommandError("Must specify one of --local, --latest, or --release")
         
-        # Load inventory for the environment
-        hosts = load_inventory(inventory_dir, env)
-        
-        if not hosts:
-            raise CommandError(f"No hosts found in inventory for environment '{env}'")
-        
         self.stdout.write(f"Deploying to {env} using mode: {mode}")
         if release_tag:
             self.stdout.write(f"Release tag: {release_tag}")
@@ -87,10 +89,9 @@ class Command(BaseCommand):
         try:
             djaploy_deploy(
                 config, 
-                hosts, 
+                inventory_file,
                 mode=mode,
-                release_tag=release_tag,
-                env=env
+                release_tag=release_tag
             )
             self.stdout.write(
                 self.style.SUCCESS(f"Successfully deployed to {env}")
