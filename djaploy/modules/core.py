@@ -33,10 +33,13 @@ class CoreModule(BaseModule):
     def configure_server(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Configure basic server requirements"""
         
+        # Get app_user from host data or fallback to project config
+        app_user = host_data.get('app_user') or project_config["app_user"]
+        
         # Create application user
         server.user(
             name="Create application user",
-            user=host_data.app_user,
+            user=app_user,
             shell="/bin/bash",
             create_home=True,
             _sudo=True,
@@ -57,7 +60,7 @@ class CoreModule(BaseModule):
             packages=["poetry"],
             extra_install_args="--break-system-packages",
             _sudo=True,
-            _sudo_user=host_data.app_user,
+            _sudo_user=app_user,
             _use_sudo_login=True,
         )
         
@@ -172,9 +175,11 @@ class CoreModule(BaseModule):
     def deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
         """Deploy the application"""
         
-        app_user = host_data.app_user
-        ssh_user = host_data.ssh_user
-        app_name = project_config["project_name"]
+        # Get app_user from host data or fallback to project config
+        app_user = host_data.get('app_user') or project_config["app_user"]
+        ssh_user = host_data.get('ssh_user', 'deploy')
+        # Use host-specific project name if available, otherwise use global project name
+        app_name = host_data.get('project_name', project_config["project_name"])
         app_path = f"/home/{app_user}/apps/{app_name}"
         
         # Create necessary directories

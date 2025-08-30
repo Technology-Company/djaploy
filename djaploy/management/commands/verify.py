@@ -211,13 +211,26 @@ class Command(BaseCommand):
                 if hosts:
                     self.stdout.write(self.style.SUCCESS(f"    ✓ Loaded {len(hosts)} host(s)"))
                     for host in hosts:
-                        self.stdout.write(f"      • {host.name} ({host.ssh_host})")
-                        if host.services:
-                            self.stdout.write(f"        Services: {', '.join(host.services)}")
-                        if host.domains:
-                            self.stdout.write(f"        Domains: {len(host.domains)} configured")
-                        if host.backup:
-                            self.stdout.write(f"        Backup: {host.backup.type} enabled")
+                        # HostConfig is a tuple (name, config_dict)
+                        if isinstance(host, tuple) and len(host) == 2:
+                            host_name, host_config = host
+                            ssh_hostname = host_config.get('ssh_hostname', 'unknown')
+                            self.stdout.write(f"      • {host_name} ({ssh_hostname})")
+                            
+                            services = host_config.get('services')
+                            if services:
+                                self.stdout.write(f"        Services: {', '.join(services)}")
+                            
+                            domains = host_config.get('domains')
+                            if domains:
+                                self.stdout.write(f"        Domains: {len(domains)} configured")
+                                
+                            backup = host_config.get('backup')
+                            if backup:
+                                backup_type = backup.type if hasattr(backup, 'type') else 'configured'
+                                self.stdout.write(f"        Backup: {backup_type} enabled")
+                        else:
+                            self.stdout.write(f"      • {host} (unknown format)")
                 else:
                     self.warnings.append(f"No hosts found in {env_name} inventory")
                     self.stdout.write(self.style.WARNING(f"    ⚠ No hosts defined"))

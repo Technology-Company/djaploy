@@ -62,8 +62,6 @@ class DjaployConfig:
     
     # SSL settings
     ssl_enabled: bool = False
-    ssl_cert_path: Optional[str] = None
-    ssl_key_path: Optional[str] = None
     
     def __post_init__(self):
         """Post-initialization processing"""
@@ -176,7 +174,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     ssh_key: Optional[str] = None
     _sudo_password: Optional[str] = None
     
-    app_user: str = "app"
+    app_user: Optional[str] = None
     app_hostname: Optional[str] = None
     
     # Services to manage on this host

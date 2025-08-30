@@ -29,12 +29,14 @@ class NginxModule(BaseModule):
         )
         
         # Create SSL directory if needed
-        if host_data.get("domains"):
+        domains = getattr(host_data, 'domains', [])
+        if domains:
+            app_user = getattr(host_data, 'app_user', 'app')
             files.directory(
                 name="Create SSL certificates directory",
-                path=f"/home/{host_data['app_user']}/.ssl",
-                user=host_data["app_user"],
-                group=host_data["app_user"],
+                path=f"/home/{app_user}/.ssl",
+                user=app_user,
+                group=app_user,
                 _sudo=True,
             )
     
@@ -52,12 +54,15 @@ class NginxModule(BaseModule):
         )
         
         # Deploy SSL certificates if configured
-        for domain_conf in host_data.get("domains", []):
+        domains = getattr(host_data, 'domains', [])
+        app_user = getattr(host_data, 'app_user', 'app')
+        
+        for domain_conf in domains:
             if "cert_file" in domain_conf and "key_file" in domain_conf:
                 files.put(
                     name=f"Deploy SSL certificate for {domain_conf['identifier']}",
                     src=domain_conf["cert_file"],
-                    dest=f"/home/{host_data['app_user']}/.ssl/{domain_conf['identifier']}.crt",
+                    dest=f"/home/{app_user}/.ssl/{domain_conf['identifier']}.crt",
                     mode="644",
                     force=True,
                     _sudo=True,
@@ -65,7 +70,7 @@ class NginxModule(BaseModule):
                 files.put(
                     name=f"Deploy SSL key for {domain_conf['identifier']}",
                     src=domain_conf["key_file"],
-                    dest=f"/home/{host_data['app_user']}/.ssl/{domain_conf['identifier']}.key",
+                    dest=f"/home/{app_user}/.ssl/{domain_conf['identifier']}.key",
                     mode="644",
                     force=True,
                     _sudo=True,

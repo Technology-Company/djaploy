@@ -3,7 +3,7 @@ name = "djaploy"
 version = "0.1.0"
 description = "Modular Django deployment system based on pyinfra"
 authors = [
-    {name = "djaploy contributors", email = "admin@example.com"}
+    {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
@@ -33,7 +33,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pyinfra>=3.0",
+    "pyinfra>=3.4",
     "django>=3.2",
 ]
 

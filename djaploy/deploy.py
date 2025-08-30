@@ -158,8 +158,6 @@ project_config = {{
     "module_configs": djaploy_config.module_configs,
     "artifact_dir": djaploy_config.artifact_dir,
     "ssl_enabled": djaploy_config.ssl_enabled,
-    "ssl_cert_path": djaploy_config.ssl_cert_path,
-    "ssl_key_path": djaploy_config.ssl_key_path,
 }}
 
 # Run module configurations
@@ -233,8 +231,6 @@ project_config = {{
     "module_configs": djaploy_config.module_configs,
     "artifact_dir": djaploy_config.artifact_dir,
     "ssl_enabled": djaploy_config.ssl_enabled,
-    "ssl_cert_path": djaploy_config.ssl_cert_path,
-    "ssl_key_path": djaploy_config.ssl_key_path,
 }}
 
 artifact_path = Path("{artifact_path}")
@@ -329,7 +325,15 @@ def _preprocess_inventory(inventory_file: str) -> str:
             f.write("# Auto-processed inventory file\n\n")
             f.write("hosts = [\n")
             for host in processed_hosts:
-                f.write(f"    {repr(host)},\n")
+                if isinstance(host, tuple) and len(host) == 2:
+                    host_name, host_data = host
+                    # Create a safe dictionary by converting non-serializable objects
+                    safe_host_data = {}
+                    for key, value in host_data.items():
+                        safe_host_data[key] = _make_value_serializable(value)
+                    f.write(f"    ({repr(host_name)}, {repr(safe_host_data)}),\n")
+                else:
+                    f.write(f"    {repr(host)},\n")
             f.write("]\n")
             
             return f.name
@@ -338,6 +342,33 @@ def _preprocess_inventory(inventory_file: str) -> str:
         sys.path[:] = original_path
         if 'inventory' in sys.modules:
             del sys.modules['inventory']
+
+
+def _make_value_serializable(value):
+    """Convert a value to a serializable form for inventory processing"""
+    if hasattr(value, '__dict__'):
+        # It's an object with attributes - convert to a dict representation
+        if hasattr(value, '__class__'):
+            obj_dict = {
+                '__class__': f"{value.__class__.__module__}.{value.__class__.__name__}",
+                '__dict__': {}
+            }
+            # Add key attributes that are commonly needed
+            for attr in ['identifier', 'domains', 'cert_file', 'key_file']:
+                if hasattr(value, attr):
+                    obj_dict['__dict__'][attr] = getattr(value, attr)
+            return obj_dict
+        else:
+            return str(value)
+    elif isinstance(value, list):
+        # Process each item in the list
+        return [_make_value_serializable(item) for item in value]
+    elif isinstance(value, dict):
+        # Process each value in the dict
+        return {k: _make_value_serializable(v) for k, v in value.items()}
+    else:
+        # Already serializable (str, int, bool, etc.)
+        return value
 
 
 def _run_prepare(prepare_script: Path, config: DjaployConfig):
