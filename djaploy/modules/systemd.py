@@ -36,7 +36,7 @@ class SystemdModule(BaseModule):
         )
         
         # Start and enable services
-        for service in host_data.get("services", []):
+        for service in getattr(host_data, "services", []):
             systemd.service(
                 name=f"Start and enable {service}",
                 service=service,
@@ -47,7 +47,7 @@ class SystemdModule(BaseModule):
             )
         
         # Start and enable timer services
-        for timer in host_data.get("timer_services", []):
+        for timer in getattr(host_data, "timer_services", []):
             systemd.service(
                 name=f"Start and enable {timer}.timer",
                 service=f"{timer}.timer",

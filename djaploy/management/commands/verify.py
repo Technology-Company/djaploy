@@ -224,6 +224,20 @@ class Command(BaseCommand):
                             domains = host_config.get('domains')
                             if domains:
                                 self.stdout.write(f"        Domains: {len(domains)} configured")
+                                if self.verbose:
+                                    self.stdout.write(f"        DEBUG: domains type = {type(domains)}")
+                                    for i, domain in enumerate(domains):
+                                        self.stdout.write(f"        DEBUG: domain[{i}] type = {type(domain)}")
+                                        if hasattr(domain, '__dict__'):
+                                            self.stdout.write(f"        DEBUG: domain[{i}] = {domain.__dict__}")
+                                        else:
+                                            self.stdout.write(f"        DEBUG: domain[{i}] = {domain}")
+                            
+                            app_hostname = host_config.get('app_hostname')
+                            if app_hostname:
+                                self.stdout.write(f"        App Hostname: {app_hostname}")
+                                if self.verbose:
+                                    self.stdout.write(f"        DEBUG: app_hostname type = {type(app_hostname)}")
                                 
                             backup = host_config.get('backup')
                             if backup:

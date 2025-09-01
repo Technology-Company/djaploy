@@ -143,22 +143,8 @@ import sys
 sys.path.insert(0, '{config.djaploy_dir}')
 from config import config as djaploy_config
 
-# Create project config dict for modules
-project_config = {{
-    "project_name": djaploy_config.project_name,
-    "project_dir": str(djaploy_config.project_dir) if djaploy_config.project_dir else None,
-    "git_dir": str(djaploy_config.git_dir) if djaploy_config.git_dir else None,
-    "djaploy_dir": str(djaploy_config.djaploy_dir) if djaploy_config.djaploy_dir else None,
-    "manage_py_path": str(djaploy_config.manage_py_path) if djaploy_config.manage_py_path else None,
-    "app_user": djaploy_config.app_user,
-    "ssh_user": djaploy_config.ssh_user,
-    "python_version": djaploy_config.python_version,
-    "python_compile": djaploy_config.python_compile,
-    "modules": djaploy_config.modules,
-    "module_configs": djaploy_config.module_configs,
-    "artifact_dir": djaploy_config.artifact_dir,
-    "ssl_enabled": djaploy_config.ssl_enabled,
-}}
+# Pass the djaploy_config object directly to modules
+project_config = djaploy_config
 
 # Run module configurations
 """
@@ -216,22 +202,8 @@ import sys
 sys.path.insert(0, '{config.djaploy_dir}')
 from config import config as djaploy_config
 
-# Create project config dict for modules
-project_config = {{
-    "project_name": djaploy_config.project_name,
-    "project_dir": str(djaploy_config.project_dir) if djaploy_config.project_dir else None,
-    "git_dir": str(djaploy_config.git_dir) if djaploy_config.git_dir else None,
-    "djaploy_dir": str(djaploy_config.djaploy_dir) if djaploy_config.djaploy_dir else None,
-    "manage_py_path": str(djaploy_config.manage_py_path) if djaploy_config.manage_py_path else None,
-    "app_user": djaploy_config.app_user,
-    "ssh_user": djaploy_config.ssh_user,
-    "python_version": djaploy_config.python_version,
-    "python_compile": djaploy_config.python_compile,
-    "modules": djaploy_config.modules,
-    "module_configs": djaploy_config.module_configs,
-    "artifact_dir": djaploy_config.artifact_dir,
-    "ssl_enabled": djaploy_config.ssl_enabled,
-}}
+# Pass the djaploy_config object directly to modules
+project_config = djaploy_config
 
 artifact_path = Path("{artifact_path}")
 

@@ -34,7 +34,7 @@ class CoreModule(BaseModule):
         """Configure basic server requirements"""
         
         # Get app_user from host data or fallback to project config
-        app_user = host_data.get('app_user') or project_config["app_user"]
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
         
         # Create application user
         server.user(
@@ -74,9 +74,9 @@ class CoreModule(BaseModule):
     def _install_python(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Install Python based on configuration"""
         
-        python_version = project_config["python_version"]
+        python_version = project_config.python_version
         
-        if project_config.get("python_compile", False):
+        if getattr(project_config, 'python_compile', False):
             self._compile_python(python_version, host_data)
         else:
             apt.packages(
@@ -176,10 +176,10 @@ class CoreModule(BaseModule):
         """Deploy the application"""
         
         # Get app_user from host data or fallback to project config
-        app_user = host_data.get('app_user') or project_config["app_user"]
-        ssh_user = host_data.get('ssh_user', 'deploy')
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        ssh_user = getattr(host_data, 'ssh_user', 'deploy')
         # Use host-specific project name if available, otherwise use global project name
-        app_name = host_data.get('project_name', project_config["project_name"])
+        app_name = getattr(host_data, 'project_name', project_config.project_name)
         app_path = f"/home/{app_user}/apps/{app_name}"
         
         # Create necessary directories
@@ -216,10 +216,29 @@ class CoreModule(BaseModule):
         )
         
         # Deploy configuration files if specified
+        # The deploy_files are part of the extracted artifact
+        env_name = getattr(host_data, 'env', 'production')
+        
+        # Get the relative path from project root to djaploy config dir
+        # djaploy_dir is an absolute path, we need to make it relative to project_dir
+        if getattr(project_config, 'djaploy_dir', None) and getattr(project_config, 'project_dir', None):
+            djaploy_dir = Path(project_config.djaploy_dir)
+            project_dir = Path(project_config.project_dir)
+            # Get the relative path from project_dir to djaploy_dir
+            try:
+                config_rel_path = djaploy_dir.relative_to(project_dir.parent)
+            except ValueError:
+                # If they're not relative, use a fallback
+                config_rel_path = "infra"
+        else:
+            config_rel_path = "infra"
+        
+        deploy_files_path = f"{app_path}/{config_rel_path}/deploy_files/{env_name}"
+        
         server.shell(
             name="Put deploy files (NGINX, systemd) in place on remote",
             commands=[
-                f"cp -r {settings.DJAPLOY_CONFIG_DIR}/deploy_files/{host_data.env}/* /",
+                f"if [ -d {deploy_files_path} ]; then cp -r {deploy_files_path}/* /; fi",
             ],
             _sudo=True,
         )
@@ -245,10 +264,32 @@ class CoreModule(BaseModule):
     def _install_dependencies(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Install Python dependencies using Poetry"""
         
+        # Get core module configuration
+        core_config = getattr(project_config, 'module_configs', {}).get("core", {})
+        
+        # Check Poetry-specific settings from module config
+        poetry_no_root = core_config.get("poetry_no_root", True)  # Default to True for applications
+        exclude_groups = core_config.get("exclude_groups", [])  # Default to excluding dev
+        
+        # Build Poetry command with appropriate flags
+        poetry_cmd = f"/home/{app_user}/.local/bin/poetry install"
+        
+        if poetry_no_root:
+            poetry_cmd += " --no-root"
+        
+        if exclude_groups:
+            if isinstance(exclude_groups, str):
+                exclude_groups = [exclude_groups]
+            for group in exclude_groups:
+                poetry_cmd += f" --without {group}"
+        
         server.shell(
             name="Install Python dependencies",
             commands=[
-                f"/home/{app_user}/.local/bin/poetry install --without dev",
+                # First configure Poetry to not use in-project virtualenvs on the server
+                f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
+                # Then install dependencies
+                poetry_cmd,
             ],
             _sudo=True,
             _sudo_user=app_user,
@@ -261,11 +302,26 @@ class CoreModule(BaseModule):
         
         manage_py = self._get_manage_py_path(app_path, project_config)
         if manage_py:
+            # Get core module configuration
+            core_config = getattr(project_config, 'module_configs', {}).get("core", {})
+            
+            # Get list of databases from module config
+            databases = core_config.get("databases", ["default"])
+            
+            # Ensure databases is a list
+            if isinstance(databases, str):
+                databases = [databases]
+            
+            # Run migrations for each database
+            migration_commands = []
+            for db in databases:
+                migration_commands.append(
+                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} migrate --database={db} --noinput"
+                )
+            
             server.shell(
                 name="Run database migrations",
-                commands=[
-                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} migrate --noinput",
-                ],
+                commands=migration_commands,
                 _sudo=True,
                 _sudo_user=app_user,
                 _use_sudo_login=True,
@@ -309,14 +365,18 @@ class CoreModule(BaseModule):
         
         # Generate domains to create certificates for
         domains = getattr(host_data, 'domains', [])
+
         if not domains:
             # Default to app_hostname if no domains specified
             app_hostname = getattr(host_data, 'app_hostname', 'localhost')
             domains = [app_hostname]
         
         for domain in domains:
-            # Handle different domain formats (string or dict)
-            if isinstance(domain, dict):
+            # Handle different domain formats (string, dict, or certificate object)
+            if hasattr(domain, 'domains') and hasattr(domain, 'identifier'):
+                domain_name = domain.identifier if hasattr(domain, 'identifier') else str(domain.domains[0])
+                alt_names = domain.domains if hasattr(domain, 'domains') else [domain_name]
+            elif isinstance(domain, dict):
                 domain_name = domain.get('identifier', domain.get('name', 'localhost'))
                 alt_names = domain.get('domains', [domain_name])
             else:
@@ -344,8 +404,8 @@ class CoreModule(BaseModule):
     def _get_manage_py_path(self, app_path: str, project_config: Dict[str, Any]) -> str:
         """Get the manage.py path from config"""
         
-        if project_config.get("manage_py_path"):
-            return str(project_config["manage_py_path"])
+        if getattr(project_config, 'manage_py_path', None):
+            return str(project_config.manage_py_path)
         
         return None
     
