@@ -1,6 +1,6 @@
 [project]
 name = "djaploy"
-version = "0.1.1"
+version = "0.1.2"
 description = "Modular Django deployment system based on pyinfra"
 authors = [
     {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
