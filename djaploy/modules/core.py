@@ -269,7 +269,7 @@ class CoreModule(BaseModule):
         
         # Check Poetry-specific settings from module config
         poetry_no_root = core_config.get("poetry_no_root", True)  # Default to True for applications
-        exclude_groups = core_config.get("exclude_groups", [])  # Default to excluding dev
+        exclude_groups = core_config.get("exclude_groups", ["dev", "management"])
         
         # Build Poetry command with appropriate flags
         poetry_cmd = f"/home/{app_user}/.local/bin/poetry install"
@@ -283,20 +283,33 @@ class CoreModule(BaseModule):
             for group in exclude_groups:
                 poetry_cmd += f" --without {group}"
         
+        commands = [
+            # First configure Poetry to not use in-project virtualenvs on the server
+            f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
+        ]
+        
+        # Optionally regenerate the lock file before installation
+        poetry_lock_enabled = core_config.get("poetry_lock", False)
+        poetry_lock_args = core_config.get("poetry_lock_args", "--no-update")
+        
+        if poetry_lock_enabled:
+            lock_cmd = f"/home/{app_user}/.local/bin/poetry lock"
+            if poetry_lock_args:
+                lock_cmd = f"{lock_cmd} {poetry_lock_args}".strip()
+            commands.append(lock_cmd)
+        
+        # Finally install the dependencies
+        commands.append(poetry_cmd)
+        
         server.shell(
             name="Install Python dependencies",
-            commands=[
-                # First configure Poetry to not use in-project virtualenvs on the server
-                f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
-                # Then install dependencies
-                poetry_cmd,
-            ],
+            commands=commands,
             _sudo=True,
             _sudo_user=app_user,
             _use_sudo_login=True,
             _chdir=app_path,
         )
-    
+
     def _run_migrations(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Run Django database migrations"""
         
