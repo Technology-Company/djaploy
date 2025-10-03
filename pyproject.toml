@@ -33,7 +33,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pyinfra>=3.4",
+    "pyinfra>=3.4,<3.5",
     "django>=3.2",
 ]
 
