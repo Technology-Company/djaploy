@@ -6,8 +6,8 @@ authors = [
     {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
 ]
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "MIT"}
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
 keywords = ["django", "deployment", "pyinfra", "automation", "infrastructure"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -35,20 +35,27 @@ classifiers = [
 dependencies = [
     "pyinfra>=3.4",
     "django>=3.2",
+    "build (>=1.3.0,<2.0.0)",
+    "twine (>=6.2.0,<7.0.0)",
 ]
 
 [project.optional-dependencies]
 certificates = ["certbot>=2.0"]
 bunny = ["certbot-dns-bunny>=0.1.0"]
 
+[project.scripts]
+djaploy-django-pyinfra = "djaploy.bin.django_pyinfra:main"
 [project.urls]
-Homepage = "https://github.com/your-org/djaploy"
-Repository = "https://github.com/your-org/djaploy"
-Issues = "https://github.com/your-org/djaploy/issues"
-Documentation = "https://github.com/your-org/djaploy#readme"
+Homepage = "https://github.com/techco-fi/djaploy"
+Repository = "https://github.com/techco-fi/djaploy"
+Issues = "https://github.com/techco-fi/djaploy/issues"
+Documentation = "https://github.com/techco-fi/djaploy#readme"
 
 [tool.setuptools]
-packages = ["djaploy"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["djaploy*"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

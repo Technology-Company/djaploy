@@ -30,7 +30,7 @@ For testing djaploy locally without publishing to PyPI:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/djaploy.git
+git clone https://github.com/techco-fi/djaploy.git
 cd djaploy
 
 # Install in editable mode
