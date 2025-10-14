@@ -269,7 +269,7 @@ class CoreModule(BaseModule):
         
         # Check Poetry-specific settings from module config
         poetry_no_root = core_config.get("poetry_no_root", True)  # Default to True for applications
-        exclude_groups = core_config.get("exclude_groups", ["dev", "management"])
+        exclude_groups = core_config.get("exclude_groups", [])
         
         # Build Poetry command with appropriate flags
         poetry_cmd = f"/home/{app_user}/.local/bin/poetry install"
