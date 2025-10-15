@@ -100,12 +100,12 @@ class Command(BaseCommand):
                     self._handle_tailscale_cert(cert, email, is_staging)
                 else:
                     # Standard certificate issuance
-                    # cert.issue_cert(
-                    #     email=email,
-                    #     is_staging=is_staging,
-                    #     git_dir=str(config.git_dir),
-                    #     project_config=config
-                    # )
+                    cert.issue_cert(
+                        email=email,
+                        is_staging=is_staging,
+                        git_dir=str(config.git_dir),
+                        project_config=config
+                    )
                     
                     # Upload to 1Password
                     primary_domain = cert.domains[0]
