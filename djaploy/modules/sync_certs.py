@@ -9,7 +9,7 @@ from pyinfra import host
 from pyinfra.operations import files, systemd
 
 from .base import BaseModule
-from ..certificates import discover_certificates
+from ..certificates import discover_certificates, OpFilePath
 
 
 class SyncCertsModule(BaseModule):
@@ -66,11 +66,37 @@ class SyncCertsModule(BaseModule):
     
     def _sync_certificate(self, cert, host_data: Dict[str, Any]):
         """Sync a single certificate to the server"""
-        
-        cert_identifier = cert.identifier
-        crt_file, key_file = cert.download_cert(download_key=True)
+
+        if isinstance(cert, dict):
+            if '__dict__' in cert:
+                cert_data = cert['__dict__']
+            else:
+                cert_data = cert
+
+            cert_identifier = cert_data.get('identifier')
+
+            crt_file = cert_data.get('cert_file') or cert_data.get('op_crt')
+            key_file = cert_data.get('key_file') or cert_data.get('op_key')
+
+            if not cert_identifier or not crt_file or not key_file:
+                print(f"Skipping invalid certificate: missing identifier or file paths")
+                return
+
+            # If we have op_crt/op_key instead of downloaded files, download them
+            if not cert_data.get('cert_file'):
+                try:
+                    crt_file = OpFilePath(str(crt_file))
+                    key_file = OpFilePath(str(key_file))
+                except Exception as e:
+                    print(f"Failed to download certificate {cert_identifier}: {e}")
+                    return
+        else:
+            # Certificate is an object with methods
+            cert_identifier = cert.identifier
+            crt_file, key_file = cert.download_cert(download_key=True)
+
         app_user = getattr(host_data, 'app_user', 'deploy')
-        
+
         # Upload certificate files with secure permissions
         for file_type, file_to_copy in [('crt', crt_file), ('key', key_file)]:
             if file_to_copy is not None:
