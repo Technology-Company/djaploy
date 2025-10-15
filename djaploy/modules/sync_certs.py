@@ -25,12 +25,13 @@ class SyncCertsModule(BaseModule):
     
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Main certificate synchronization operation"""
-        
-        certificates = self._discover_certificates(project_config)
-        
-        if not certificates:
+
+        # Get certificates configured for this specific host
+        host_domains = host_data.get('domains', []) if isinstance(host_data, dict) else getattr(host_data, 'domains', [])
+
+        if not host_domains:
             return
-        
+
         # Ensure SSL directory exists
         app_user = getattr(host_data, 'app_user', 'deploy')
         files.directory(
@@ -40,11 +41,11 @@ class SyncCertsModule(BaseModule):
             group=app_user,
             _sudo=True,
         )
-        
-        # Sync each certificate
-        for cert in certificates:
+
+        # Sync only the certificates configured for this host
+        for cert in host_domains:
             self._sync_certificate(cert, host_data)
-        
+
         # Reload services that use certificates
         self._reload_ssl_services(host_data)
     
