@@ -62,6 +62,7 @@ class DjaployConfig:
     
     # SSL settings
     ssl_enabled: bool = False
+    letsencrypt_webroot: str = "/var/www/challenges"
     
     def __post_init__(self):
         """Post-initialization processing"""

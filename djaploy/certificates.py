@@ -357,27 +357,44 @@ class LetsEncryptCertificate(DnsCertificate):
     def issue_cert(
         self,
         email: str,
-        webroot_path: str = "/var/www/html",
+        webroot_path: str = None,
         is_staging: bool = True,
-        base_dir: str = None
+        git_dir: str = None,
+        project_config = None
     ):
-        """Issue certificate using HTTP validation"""
-        if base_dir is None:
-            base_dir = os.getcwd()
-            
+        """Issue certificate using manual HTTP validation"""
+        if git_dir is None:
+            git_dir = os.getcwd()
+
+        # Get webroot from project config if not provided
+        if webroot_path is None and project_config:
+            webroot_path = getattr(project_config, 'letsencrypt_webroot', '/var/www/challenges')
+        elif webroot_path is None:
+            webroot_path = '/var/www/challenges'
+
+        # Display instructions to user
+        print("\n" + "="*70)
+        print("Let's Encrypt Manual HTTP Validation")
+        print("="*70)
+        print(f"\nDomains: {', '.join(self.domains)}")
+        print(f"Server webroot path: {webroot_path}")
+        print("\nCertbot will pause and show you challenge tokens.")
+        print("You need to upload each challenge file to your server at:")
+        print(f"  {webroot_path}/.well-known/acme-challenge/[TOKEN]")
+        print("\nMake sure your nginx is configured to serve files from this path.")
+        print("="*70 + "\n")
+
         # Setup certbot directory
-        certbot_dir = os.path.join(base_dir, "certbot")
+        certbot_dir = os.path.join(git_dir, "certbot")
         os.makedirs(certbot_dir, exist_ok=True)
 
         # Build certbot command
         command = [
             "certbot",
             "certonly",
-            "--non-interactive",
             "--agree-tos",
-            "--webroot",
-            "-w",
-            webroot_path,
+            "--manual",
+            "--preferred-challenges", "http",
             "--config-dir",
             os.path.join(certbot_dir, "config"),
             "--logs-dir",
@@ -396,11 +413,11 @@ class LetsEncryptCertificate(DnsCertificate):
         if is_staging:
             command.append("--staging")
 
-        # Run certbot
-        result = subprocess.run(command, capture_output=True, text=True)
+        # Run certbot in interactive mode
+        result = subprocess.run(command, capture_output=False, text=True)
 
         if result.returncode != 0:
-            raise ValueError(f"Failed to issue certificate: {result.stderr}")
+            raise ValueError(f"Failed to issue certificate (exit code: {result.returncode})")
 
 
 def discover_certificates(certificates_module_path: str) -> List[DnsCertificate]:
