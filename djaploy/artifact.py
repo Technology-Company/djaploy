@@ -98,27 +98,37 @@ def _create_release_artifact(config: DjaployConfig, artifact_dir: Path, release_
 
 def _create_git_artifact(config: DjaployConfig, artifact_dir: Path, git_ref: str) -> Path:
     """Create artifact from a git reference"""
-    
+
     artifact_tar = artifact_dir / f"{config.project_name}.{git_ref}.tar"
     artifact_file = artifact_dir / f"{config.project_name}.{git_ref}.tar.gz"
-    
+
     # Change to git directory
     original_dir = os.getcwd()
     os.chdir(config.git_dir)
-    
+
     try:
+        # Build git archive command
+        cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), git_ref]
+
+        # Check if there are extra files to add from config
+        artifact_config = config.module_configs.get('artifact', {})
+        extra_files = artifact_config.get('extra_files', [])
+
+        # Add extra files if they exist
+        for extra_file in extra_files:
+            extra_file_path = config.git_dir / extra_file
+            if extra_file_path.exists():
+                cmd.extend(["--add-file", extra_file])
+
         # Create tar archive from git
-        subprocess.run(
-            ["git", "archive", "--format=tar", "-o", str(artifact_tar), git_ref],
-            check=True,
-        )
-        
+        subprocess.run(cmd, check=True)
+
         # Compress the tar file
         subprocess.run(
             ["gzip", "-f", str(artifact_tar)],
             check=True,
         )
-        
+
         return artifact_file
     finally:
         os.chdir(original_dir)

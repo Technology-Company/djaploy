@@ -68,24 +68,24 @@ def deploy_project(config: DjaployConfig,
     
     # Validate configuration
     config.validate()
-    
+
+    # Run prepare script if it exists (BEFORE artifact creation)
+    prepare_script = config.djaploy_dir / "prepare.py"
+    if prepare_script.exists():
+        _run_prepare(prepare_script, config)
+
     # Create artifact based on mode
     artifact_path = create_artifact(
         config=config,
         mode=mode,
         release_tag=release_tag
     )
-    
+
     # Load modules
     modules = load_modules(config.modules, config.module_configs)
-    
+
     # Pre-process inventory file to convert HostConfig objects to tuples
     processed_inventory_file = _preprocess_inventory(inventory_file)
-    
-    # Run prepare script if it exists
-    prepare_script = config.djaploy_dir / "prepare.py"
-    if prepare_script.exists():
-        _run_prepare(prepare_script, config)
     
     # Create pyinfra deployment script
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:

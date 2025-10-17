@@ -1,6 +1,6 @@
 [project]
 name = "djaploy"
-version = "0.1.7"
+version = "0.1.8"
 description = "Modular Django deployment system based on pyinfra"
 authors = [
     {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 certificates = ["certbot>=2.0"]
-bunny = ["certbot-dns-bunny>=0.1.0"]
+bunny = ["certbot-dns-bunny<=0.0.9"]
 
 [project.scripts]
 djaploy-django-pyinfra = "djaploy.bin.django_pyinfra:main"
