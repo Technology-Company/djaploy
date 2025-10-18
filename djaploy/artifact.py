@@ -114,14 +114,41 @@ def _create_git_artifact(config: DjaployConfig, artifact_dir: Path, git_ref: str
         artifact_config = config.module_configs.get('artifact', {})
         extra_files = artifact_config.get('extra_files', [])
 
-        # Add extra files if they exist
+        # Add extra files to git index temporarily if they exist
+        files_to_unstage = []
+        if extra_files:
+            print(f"[ARTIFACT] Adding {len(extra_files)} extra file(s) to archive")
+
         for extra_file in extra_files:
             extra_file_path = config.git_dir / extra_file
             if extra_file_path.exists():
-                cmd.extend(["--add-file", extra_file])
+                subprocess.run(["git", "add", "-f", extra_file], check=True)
+                files_to_unstage.append(extra_file)
+            else:
+                print(f"[ARTIFACT] WARNING: File not found: {extra_file}")
 
-        # Create tar archive from git
-        subprocess.run(cmd, check=True)
+        # If we added files to the index, use git write-tree to create archive
+        if files_to_unstage:
+            tree_hash = subprocess.run(
+                ["git", "write-tree"],
+                capture_output=True,
+                check=True,
+                text=True
+            ).stdout.strip()
+
+            # Use the tree object instead of git_ref
+            cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), tree_hash]
+
+            # Create tar archive from git tree
+            subprocess.run(cmd, check=True)
+
+            # Unstage the files we temporarily added
+            for extra_file in files_to_unstage:
+                subprocess.run(["git", "reset", "HEAD", extra_file], check=True,
+                             capture_output=True)  # Suppress output
+        else:
+            # No extra files, use original approach
+            subprocess.run(cmd, check=True)
 
         # Compress the tar file
         subprocess.run(
