@@ -176,8 +176,8 @@ class DnsCertificate:
         key_field = self.op_key.split('/')[3]
 
         for field_name, path_to_file in [(crt_field, crt_path), (key_field, key_path)]:
-            escaped_field_name = re.sub(r'\.', r'\\.', field_name)
-            
+            escaped_field_name = field_name.replace('.', '\\.')
+
             if not os.path.exists(path_to_file):
                 raise FileNotFoundError(f"Certificate file not found: {path_to_file}")
 
@@ -353,7 +353,31 @@ class TailscaleDnsCertificate(DnsCertificate):
 
 class LetsEncryptCertificate(DnsCertificate):
     """Certificate using Let's Encrypt with HTTP validation"""
-    
+
+    def __init__(
+        self,
+        *domains: str,
+        op_crt: str,
+        op_key: str,
+        skip_validity_check: bool = False,
+        use_webroot: bool = False,
+        use_manual_hook: bool = False,
+        **kwargs,
+    ):
+        """
+        Initialize Let's Encrypt certificate
+
+        Args:
+            use_webroot: If True, use webroot plugin for automated validation.
+                        If False (default), use manual mode.
+            use_manual_hook: If True, use manual-auth-hook to automatically upload
+                            challenge files via SSH. Requires host_config with SSH details.
+                            This makes "manual" mode fully automated.
+        """
+        super().__init__(*domains, op_crt=op_crt, op_key=op_key, skip_validity_check=skip_validity_check, **kwargs)
+        self.use_webroot = use_webroot
+        self.use_manual_hook = use_manual_hook
+
     def issue_cert(
         self,
         email: str,
@@ -362,7 +386,12 @@ class LetsEncryptCertificate(DnsCertificate):
         git_dir: str = None,
         project_config = None
     ):
-        """Issue certificate using manual HTTP validation"""
+        """
+        Issue certificate using HTTP validation
+
+        Uses either webroot plugin (automatic) or manual mode (interactive)
+        depending on the use_webroot setting.
+        """
         if git_dir is None:
             git_dir = os.getcwd()
 
@@ -372,38 +401,57 @@ class LetsEncryptCertificate(DnsCertificate):
         elif webroot_path is None:
             webroot_path = '/var/www/challenges'
 
-        # Display instructions to user
-        print("\n" + "="*70)
-        print("Let's Encrypt Manual HTTP Validation")
-        print("="*70)
-        print(f"\nDomains: {', '.join(self.domains)}")
-        print(f"Server webroot path: {webroot_path}")
-        print("\nCertbot will pause and show you challenge tokens.")
-        print("You need to upload each challenge file to your server at:")
-        print(f"  {webroot_path}/.well-known/acme-challenge/[TOKEN]")
-        print("\nMake sure your nginx is configured to serve files from this path.")
-        print("="*70 + "\n")
-
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
         os.makedirs(certbot_dir, exist_ok=True)
 
-        # Build certbot command
-        command = [
-            "certbot",
-            "certonly",
-            "--agree-tos",
-            "--manual",
-            "--preferred-challenges", "http",
-            "--config-dir",
-            os.path.join(certbot_dir, "config"),
-            "--logs-dir",
-            os.path.join(certbot_dir, "logs"),
-            "--work-dir",
-            os.path.join(certbot_dir, "work"),
-            "--email",
-            email,
-        ]
+        if self.use_webroot:
+            # Automated webroot mode - requires access to web server directory
+            print(f"Issuing certificate using webroot: {webroot_path}")
+            command = [
+                "certbot",
+                "certonly",
+                "--non-interactive",
+                "--agree-tos",
+                "--webroot",
+                "--webroot-path", webroot_path,
+                "--config-dir",
+                os.path.join(certbot_dir, "config"),
+                "--logs-dir",
+                os.path.join(certbot_dir, "logs"),
+                "--work-dir",
+                os.path.join(certbot_dir, "work"),
+                "--email",
+                email,
+            ]
+        else:
+            # Manual interactive mode - requires user to upload challenge files
+            print("\n" + "="*70)
+            print("Let's Encrypt Manual HTTP Validation")
+            print("="*70)
+            print(f"\nDomains: {', '.join(self.domains)}")
+            print(f"Server webroot path: {webroot_path}")
+            print("\nCertbot will pause and show you challenge tokens.")
+            print("You need to upload each challenge file to your server at:")
+            print(f"  {webroot_path}/.well-known/acme-challenge/[TOKEN]")
+            print("\nMake sure your nginx is configured to serve files from this path.")
+            print("="*70 + "\n")
+
+            command = [
+                "certbot",
+                "certonly",
+                "--agree-tos",
+                "--manual",
+                "--preferred-challenges", "http",
+                "--config-dir",
+                os.path.join(certbot_dir, "config"),
+                "--logs-dir",
+                os.path.join(certbot_dir, "logs"),
+                "--work-dir",
+                os.path.join(certbot_dir, "work"),
+                "--email",
+                email,
+            ]
 
         # Add domains
         for domain in self.domains:
@@ -413,11 +461,13 @@ class LetsEncryptCertificate(DnsCertificate):
         if is_staging:
             command.append("--staging")
 
-        # Run certbot in interactive mode
-        result = subprocess.run(command, capture_output=False, text=True)
+        # Run certbot
+        capture_output = self.use_webroot  # Only capture output in webroot mode
+        result = subprocess.run(command, capture_output=capture_output, text=True)
 
         if result.returncode != 0:
-            raise ValueError(f"Failed to issue certificate (exit code: {result.returncode})")
+            error_msg = result.stderr if capture_output else f"exit code: {result.returncode}"
+            raise ValueError(f"Failed to issue certificate: {error_msg}")
 
 
 def discover_certificates(certificates_module_path: str) -> List[DnsCertificate]:
