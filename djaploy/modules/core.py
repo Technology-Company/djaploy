@@ -32,10 +32,11 @@ class CoreModule(BaseModule):
     
     def configure_server(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Configure basic server requirements"""
-        
+
         # Get app_user from host data or fallback to project config
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
-        
+        ssh_user = getattr(host_data, 'ssh_user')
+
         # Create application user
         server.user(
             name="Create application user",
@@ -44,12 +45,15 @@ class CoreModule(BaseModule):
             create_home=True,
             _sudo=True,
         )
-        
+
         # Update apt repositories
         apt.update(
             name="Update apt repositories",
             _sudo=True,
         )
+
+        # Configure ownership for HTTP challenge operations (Let's Encrypt)
+        self._configure_http_challenge_sudo(ssh_user, project_config)
         
         # Install Python
         self._install_python(host_data, project_config)
@@ -416,12 +420,29 @@ class CoreModule(BaseModule):
 
     def _get_manage_py_path(self, app_path: str, project_config: Dict[str, Any]) -> str:
         """Get the manage.py path from config"""
-        
+
         if getattr(project_config, 'manage_py_path', None):
             return str(project_config.manage_py_path)
-        
+
         return None
-    
+
+    def _configure_http_challenge_sudo(self, ssh_user: str, project_config: Dict[str, Any]):
+        """Create ACME challenge directory with correct ownership for Let's Encrypt"""
+
+        # Get webroot path from config or use default
+        http_hook_config = getattr(project_config, 'module_configs', {}).get('http_hook', {})
+        webroot = http_hook_config.get('webroot_path', '/var/www/challenges')
+
+        # Create the webroot directory owned by ssh_user
+        files.directory(
+            name="Create ACME challenge directory",
+            path=webroot,
+            user=ssh_user,
+            group='www-data',
+            mode='775',
+            _sudo=True,
+        )
+
     def get_required_packages(self) -> List[str]:
         """Get required system packages"""
         return ["curl", "wget", "build-essential"]

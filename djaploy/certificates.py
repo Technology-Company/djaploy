@@ -9,7 +9,12 @@ import datetime
 import re
 import subprocess
 import tempfile
-from typing import List, Optional
+import importlib.util
+from pathlib import Path
+from typing import List, Dict, Any, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import DjaployConfig
 
 from .utils import StringLike
 
@@ -351,6 +356,329 @@ class TailscaleDnsCertificate(DnsCertificate):
         pass
 
 
+class SshHttpHook:
+    """
+    SSH-based HTTP challenge hook for Let's Encrypt certificates.
+
+    Automatically discovers which host serves a domain by scanning inventory files,
+    then uses SSH to place/remove challenge files for HTTP-01 validation.
+
+    Configuration precedence (highest to lowest):
+    1. Instance-level (passed to SshHttpHook.__init__)
+    2. Host-level (in HostConfig's http_hook dict)
+    3. Project-level (DjaployConfig.module_configs['http_hook'])
+    4. Defaults
+
+    Example usage in project config:
+        module_configs={
+            'http_hook': {
+                'webroot_path': '/var/www/challenges',
+                'use_sudo': True,
+                'file_group': 'www-data',
+            },
+        }
+
+    Example usage in inventory:
+        HostConfig(
+            'my-server',
+            ssh_hostname='...',
+            http_hook={
+                'webroot_path': '/custom/path',
+            },
+        )
+    """
+
+    DEFAULT_WEBROOT = '/var/www/challenges'
+
+    def __init__(
+        self,
+        djaploy_dir: Path = None,
+        project_config: "DjaployConfig" = None,
+        # Overridable settings
+        webroot_path: str = None,
+        use_sudo: bool = None,
+        file_owner: str = None,
+        file_group: str = None,
+        file_mode: str = '0644',
+    ):
+        """
+        Initialize SSH HTTP hook.
+
+        Args:
+            djaploy_dir: Path to the djaploy configuration directory (contains inventory/)
+            project_config: DjaployConfig instance for project-level settings
+            webroot_path: Web server path where challenges are served from
+            use_sudo: Whether to use sudo for file operations
+            file_owner: Owner for challenge files (defaults to host's ssh_user)
+            file_group: Group for challenge files
+            file_mode: Permission mode for challenge files
+        """
+        self.djaploy_dir = Path(djaploy_dir) if djaploy_dir else None
+        self.project_config = project_config
+
+        # Instance-level overrides
+        self._webroot_path = webroot_path
+        self._use_sudo = use_sudo
+        self._file_owner = file_owner
+        self._file_group = file_group
+        self._file_mode = file_mode
+
+        # Cache for host lookups
+        self._host_cache: Dict[str, Tuple[str, Dict, str]] = {}
+
+    def _load_inventory(self, inventory_file: Path) -> List[Tuple[str, Dict]]:
+        """Load hosts from an inventory file"""
+        import sys
+
+        spec = importlib.util.spec_from_file_location("inventory", str(inventory_file))
+        inventory_module = importlib.util.module_from_spec(spec)
+
+        original_path = sys.path[:]
+        try:
+            # Add djaploy_dir and its parent to path so imports work
+            # Parent is needed for imports like 'from infra.certificates import x'
+            # when djaploy_dir is /project/app/infra
+            if self.djaploy_dir:
+                sys.path.insert(0, str(self.djaploy_dir.parent))
+                sys.path.insert(0, str(self.djaploy_dir))
+
+            sys.modules['inventory'] = inventory_module
+            spec.loader.exec_module(inventory_module)
+
+            hosts = getattr(inventory_module, 'hosts', [])
+
+            # Convert to list of (name, data) tuples
+            result = []
+            for host in hosts:
+                if isinstance(host, tuple) and len(host) == 2:
+                    result.append(host)
+
+            return result
+        finally:
+            sys.path[:] = original_path
+            if 'inventory' in sys.modules:
+                del sys.modules['inventory']
+
+    def find_host_for_domain(self, domain: str) -> Tuple[str, Dict[str, Any], str]:
+        """
+        Find the host that serves a given domain.
+
+        Returns:
+            Tuple of (host_name, host_data, environment_name)
+
+        Raises:
+            ValueError: If no host found for the domain
+        """
+        # Check cache first
+        if domain in self._host_cache:
+            return self._host_cache[domain]
+
+        # Determine inventory directory
+        inventory_dir = None
+        if self.djaploy_dir:
+            inventory_dir = self.djaploy_dir / 'inventory'
+        elif self.project_config and self.project_config.djaploy_dir:
+            inventory_dir = self.project_config.djaploy_dir / 'inventory'
+
+        if not inventory_dir or not inventory_dir.exists():
+            raise ValueError(
+                f"Cannot find inventory directory. "
+                f"Provide djaploy_dir or project_config with djaploy_dir set."
+            )
+
+        # Scan all inventory files
+        for inv_file in inventory_dir.glob('*.py'):
+            if inv_file.name.startswith('_'):
+                continue
+
+            env_name = inv_file.stem
+
+            try:
+                hosts = self._load_inventory(inv_file)
+            except Exception:
+                # Silently skip inventories that fail to load
+                # (they may reference certificates not relevant to this domain)
+                continue
+
+            for host_name, host_data in hosts:
+                # Check domains in host_data
+                host_domains = host_data.get('domains', [])
+
+                for domain_cert in host_domains:
+                    # Handle both certificate objects and dicts
+                    cert_domains = []
+                    if hasattr(domain_cert, 'domains'):
+                        cert_domains = domain_cert.domains
+                    elif hasattr(domain_cert, 'identifier'):
+                        cert_domains = [domain_cert.identifier]
+                    elif isinstance(domain_cert, dict):
+                        cert_domains = domain_cert.get('domains', [])
+                        if not cert_domains and domain_cert.get('identifier'):
+                            cert_domains = [domain_cert['identifier']]
+
+                    if domain in cert_domains:
+                        result = (host_name, host_data, env_name)
+                        self._host_cache[domain] = result
+                        return result
+
+                # Also check app_hostname
+                if host_data.get('app_hostname') == domain:
+                    result = (host_name, host_data, env_name)
+                    self._host_cache[domain] = result
+                    return result
+
+        raise ValueError(f"No host found for domain: {domain}")
+
+    def _get_config_for_host(self, host_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge configuration from all levels for a specific host"""
+        # Start with defaults
+        config = {
+            'webroot_path': self.DEFAULT_WEBROOT,
+            'use_sudo': False,
+            'file_owner': None,
+            'file_group': 'www-data',
+            'file_mode': '0644',
+        }
+
+        # Layer 1: Project-level config
+        if self.project_config:
+            hook_config = self.project_config.module_configs.get('http_hook', {})
+            for k, v in hook_config.items():
+                if v is not None:
+                    config[k] = v
+
+        # Layer 2: Host-level config
+        host_hook_config = host_data.get('http_hook', {})
+        if isinstance(host_hook_config, dict):
+            for k, v in host_hook_config.items():
+                if v is not None:
+                    config[k] = v
+
+        # Layer 3: Instance-level overrides
+        if self._webroot_path is not None:
+            config['webroot_path'] = self._webroot_path
+        if self._use_sudo is not None:
+            config['use_sudo'] = self._use_sudo
+        if self._file_owner is not None:
+            config['file_owner'] = self._file_owner
+        if self._file_group is not None:
+            config['file_group'] = self._file_group
+        if self._file_mode is not None:
+            config['file_mode'] = self._file_mode
+
+        # Default file_owner to ssh_user if not specified
+        if not config['file_owner']:
+            config['file_owner'] = host_data.get('ssh_user', 'www-data')
+
+        return config
+
+    def generate_hook_scripts(self, certbot_dir: str, domain: str) -> Tuple[str, str]:
+        """
+        Generate auth and cleanup hook scripts for certbot.
+
+        Generates simple bash scripts with SSH commands baked in.
+
+        Args:
+            certbot_dir: Directory to write the hook scripts
+            domain: The domain to generate hooks for (used to resolve host)
+
+        Returns:
+            Tuple of (auth_hook_path, cleanup_hook_path)
+        """
+        os.makedirs(certbot_dir, exist_ok=True)
+
+        # Resolve host details at generation time
+        host_name, host_data, env_name = self.find_host_for_domain(domain)
+        config = self._get_config_for_host(host_data)
+
+        ssh_host = host_data['ssh_hostname']
+        ssh_user = host_data.get('ssh_user', 'deploy')
+        ssh_port = host_data.get('ssh_port', 22)
+        ssh_key = host_data.get('ssh_key', '')
+        sudo_password = host_data.get('_sudo_password', '')
+        webroot = config['webroot_path']
+        use_sudo = config['use_sudo']
+        file_owner = config['file_owner']
+        file_group = config['file_group']
+        file_mode = config['file_mode']
+
+        # Build SSH command prefix
+        ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}"
+        if ssh_key:
+            ssh_key_expanded = os.path.expanduser(ssh_key)
+            ssh_opts += f" -i {ssh_key_expanded}"
+
+        ssh_cmd = f"ssh {ssh_opts} {ssh_user}@{ssh_host}"
+
+        # Build sudo prefix (with -S for password via stdin if needed)
+        if use_sudo and sudo_password:
+            sudo_prefix = f"echo '{sudo_password}' | sudo -S"
+        elif use_sudo:
+            sudo_prefix = "sudo"
+        else:
+            sudo_prefix = ""
+
+        # Build the commands
+        if use_sudo:
+            write_cmd = f'echo \\"$CERTBOT_VALIDATION\\" | {sudo_prefix} tee {{webroot}}/$CERTBOT_TOKEN > /dev/null'
+            mkdir_cmd = f"{sudo_prefix} mkdir -p {webroot}"
+            chown_cmd = f"{sudo_prefix} chown {file_owner}:{file_group} {webroot}/$CERTBOT_TOKEN"
+            chmod_cmd = f"{sudo_prefix} chmod {file_mode} {webroot}/$CERTBOT_TOKEN"
+            rm_cmd = f"{sudo_prefix} rm -f {webroot}/$CERTBOT_TOKEN"
+        else:
+            write_cmd = 'echo \\"$CERTBOT_VALIDATION\\" > {webroot}/$CERTBOT_TOKEN'
+            mkdir_cmd = f"mkdir -p {webroot}"
+            chown_cmd = ""
+            chmod_cmd = f"chmod {file_mode} {webroot}/$CERTBOT_TOKEN"
+            rm_cmd = f"rm -f {webroot}/$CERTBOT_TOKEN"
+
+        write_cmd = write_cmd.format(webroot=webroot)
+
+        # Build combined remote command (single SSH call for speed)
+        remote_cmds = [mkdir_cmd, write_cmd]
+        if chown_cmd:
+            remote_cmds.append(chown_cmd)
+        remote_cmds.append(chmod_cmd)
+        combined_cmd = " && ".join(remote_cmds)
+
+        # Auth hook script
+        auth_script = f'''#!/bin/bash
+# Auto-generated certbot auth hook for {domain}
+# Host: {host_name} ({env_name})
+set -e
+
+echo "Placing challenge for $CERTBOT_DOMAIN on {host_name} ({env_name})"
+
+{ssh_cmd} "{combined_cmd}"
+
+echo "  Challenge file created: {webroot}/$CERTBOT_TOKEN"
+'''
+
+        auth_hook_path = os.path.join(certbot_dir, 'auth_hook.sh')
+        with open(auth_hook_path, 'w') as f:
+            f.write(auth_script)
+        os.chmod(auth_hook_path, 0o755)
+
+        # Cleanup hook script
+        cleanup_script = f'''#!/bin/bash
+# Auto-generated certbot cleanup hook for {domain}
+# Host: {host_name} ({env_name})
+
+echo "Cleaning up challenge for $CERTBOT_DOMAIN on {host_name}"
+
+{ssh_cmd} "{rm_cmd}" || echo "  Warning: Failed to remove challenge file"
+
+echo "  Challenge file removed: {webroot}/$CERTBOT_TOKEN"
+'''
+
+        cleanup_hook_path = os.path.join(certbot_dir, 'cleanup_hook.sh')
+        with open(cleanup_hook_path, 'w') as f:
+            f.write(cleanup_script)
+        os.chmod(cleanup_hook_path, 0o755)
+
+        return auth_hook_path, cleanup_hook_path
+
+
 class LetsEncryptCertificate(DnsCertificate):
     """Certificate using Let's Encrypt with HTTP validation"""
 
@@ -361,7 +689,7 @@ class LetsEncryptCertificate(DnsCertificate):
         op_key: str,
         skip_validity_check: bool = False,
         use_webroot: bool = False,
-        use_manual_hook: bool = False,
+        http_hook: SshHttpHook = None,
         **kwargs,
     ):
         """
@@ -369,14 +697,12 @@ class LetsEncryptCertificate(DnsCertificate):
 
         Args:
             use_webroot: If True, use webroot plugin for automated validation.
-                        If False (default), use manual mode.
-            use_manual_hook: If True, use manual-auth-hook to automatically upload
-                            challenge files via SSH. Requires host_config with SSH details.
-                            This makes "manual" mode fully automated.
+                        Requires certbot to run on the same server as the webroot.
+            http_hook: SshHttpHook instance for automated SSH-based HTTP validation.
         """
         super().__init__(*domains, op_crt=op_crt, op_key=op_key, skip_validity_check=skip_validity_check, **kwargs)
         self.use_webroot = use_webroot
-        self.use_manual_hook = use_manual_hook
+        self.http_hook = http_hook
 
     def issue_cert(
         self,
@@ -384,13 +710,25 @@ class LetsEncryptCertificate(DnsCertificate):
         webroot_path: str = None,
         is_staging: bool = True,
         git_dir: str = None,
-        project_config = None
+        project_config: "DjaployConfig" = None,
+        use_ssh_hook: bool = None,
     ):
         """
         Issue certificate using HTTP validation
 
-        Uses either webroot plugin (automatic) or manual mode (interactive)
-        depending on the use_webroot setting.
+        Modes (in order of precedence):
+        1. http_hook provided or use_ssh_hook=True: SSH-based automated validation
+        2. use_webroot=True: Webroot plugin (certbot writes directly)
+        3. Neither: Interactive manual mode
+
+        Args:
+            email: Email for Let's Encrypt registration
+            webroot_path: Path to webroot for challenge files
+            is_staging: Use Let's Encrypt staging environment
+            git_dir: Directory for certbot files (defaults to cwd)
+            project_config: DjaployConfig for project-level settings
+            use_ssh_hook: Force SSH hook mode even without http_hook set.
+                         If True and no http_hook is set, creates one from project_config.
         """
         if git_dir is None:
             git_dir = os.getcwd()
@@ -405,7 +743,50 @@ class LetsEncryptCertificate(DnsCertificate):
         certbot_dir = os.path.join(git_dir, "certbot")
         os.makedirs(certbot_dir, exist_ok=True)
 
-        if self.use_webroot:
+        # Determine if we should use SSH hook mode
+        http_hook = self.http_hook
+        if use_ssh_hook and not http_hook and project_config:
+            # Auto-create SshHttpHook from project config
+            http_hook = SshHttpHook(
+                djaploy_dir=project_config.djaploy_dir,
+                project_config=project_config,
+            )
+
+        if http_hook:
+            # SSH hook mode - generate hook scripts
+            print(f"Issuing certificate using SSH HTTP hook")
+            print(f"  Domains: {', '.join(self.domains)}")
+
+            # Pass project_config to hook if not already set
+            if not http_hook.project_config and project_config:
+                http_hook.project_config = project_config
+
+            # Generate hook scripts (use first domain for host resolution)
+            primary_domain = self.domains[0]
+            auth_hook_path, cleanup_hook_path = http_hook.generate_hook_scripts(certbot_dir, primary_domain)
+            print(f"  Auth hook: {auth_hook_path}")
+            print(f"  Cleanup hook: {cleanup_hook_path}")
+
+            command = [
+                "certbot",
+                "certonly",
+                "--non-interactive",
+                "--agree-tos",
+                "--manual",
+                "--preferred-challenges", "http",
+                "--manual-auth-hook", auth_hook_path,
+                "--manual-cleanup-hook", cleanup_hook_path,
+                "--config-dir",
+                os.path.join(certbot_dir, "config"),
+                "--logs-dir",
+                os.path.join(certbot_dir, "logs"),
+                "--work-dir",
+                os.path.join(certbot_dir, "work"),
+                "--email",
+                email,
+            ]
+
+        elif self.use_webroot:
             # Automated webroot mode - requires access to web server directory
             print(f"Issuing certificate using webroot: {webroot_path}")
             command = [
@@ -461,12 +842,12 @@ class LetsEncryptCertificate(DnsCertificate):
         if is_staging:
             command.append("--staging")
 
-        # Run certbot
-        capture_output = self.use_webroot  # Only capture output in webroot mode
-        result = subprocess.run(command, capture_output=capture_output, text=True)
+        # Run certbot - capture output for automated modes
+        is_automated = bool(http_hook) or self.use_webroot
+        result = subprocess.run(command, capture_output=is_automated, text=True)
 
         if result.returncode != 0:
-            error_msg = result.stderr if capture_output else f"exit code: {result.returncode}"
+            error_msg = result.stderr if is_automated else f"exit code: {result.returncode}"
             raise ValueError(f"Failed to issue certificate: {error_msg}")
 
 
