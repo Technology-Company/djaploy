@@ -11,10 +11,15 @@ from pathlib import Path
 class HostConfigMetaclass(type):
     def __new__(cls, name, bases, attrs):
         dict_typing = attrs.get("__annotations__", {})
-        defaults = {
-            key: attrs.pop(key) for key, value in list(attrs.items()) 
-            if not key.startswith("_") and not callable(value) and key not in dict_typing
-        }
+        defaults = {}
+        # Capture defaults from annotated fields (e.g., field: Type = default)
+        for key in dict_typing:
+            if key in attrs and not key.startswith("_"):
+                defaults[key] = attrs.pop(key)
+        # Capture defaults from non-annotated fields
+        for key, value in list(attrs.items()):
+            if not key.startswith("_") and not callable(value) and key not in ("__module__", "__qualname__"):
+                defaults[key] = attrs.pop(key)
         attrs["_dict_annotations"] = dict_typing
         attrs["_dict_defaults"] = defaults
         return super().__new__(cls, name, bases, attrs)
@@ -123,29 +128,33 @@ class DjaployConfig:
 @dataclass
 class BackupConfig:
     """Backup configuration for a host"""
-    
+
     enabled: bool = True
     type: str = "sftp"  # sftp or s3
-    
+
     # Connection settings
     host: Optional[str] = None  # For SFTP
     user: Optional[str] = None  # For SFTP
     password: Optional[str] = None  # For SFTP
     port: int = 22  # For SFTP
-    
+
     # S3 settings
     s3_endpoint: Optional[str] = None
     s3_region: Optional[str] = None
     s3_access_key: Optional[str] = None
     s3_secret_key: Optional[str] = None
     s3_bucket: Optional[str] = None
-    
+
     # Backup settings
     backup_path: str = "/backups"  # Remote path for backups
     retention_days: int = 30
     databases: List[str] = field(default_factory=lambda: ["default.db"])
     backup_media: bool = True
-    
+
+    # Local paths (defaults will be computed based on app_user if not set)
+    db_path: Optional[str] = None  # e.g., /home/{app_user}/dbs
+    media_path: Optional[str] = None  # e.g., /home/{app_user}/apps/{project}/media
+
     # Schedule (cron format)
     schedule: str = "0 2 * * *"  # Daily at 2 AM by default
     
@@ -185,7 +194,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     # Domain configurations
     domains: Optional[List[Dict[str, Any]]] = None
     
-    pregenerate_certificates: bool = False
+    pregenerate_certificates: Optional[bool] = False
     
     # Backup configuration for this host
     backup: Optional[BackupConfig] = None
