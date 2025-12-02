@@ -1,6 +1,3 @@
-"""
-Tailscale module for djaploy - manages Tailscale VPN and certificate generation
-"""
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -21,12 +18,11 @@ class TailscaleModule(BaseModule):
     def configure_server(self, host_data: Dict[str, Any], project_config: Any):
         """Install and authenticate Tailscale"""
 
-        # Check if tailscale_auth_key is provided
-        auth_key = getattr(host_data, 'tailscale_auth_key', None)
+        auth_key = host_data.get('tailscale_auth_key')
         if not auth_key:
             return  # Skip if no auth key configured
 
-        app_user = getattr(host_data, 'app_user', project_config.app_user)
+        app_user = host_data.get('app_user') or project_config.app_user
 
         # Install tailscale if not present
         if host.get_fact(DebPackage, 'tailscale') is None:
@@ -50,23 +46,21 @@ class TailscaleModule(BaseModule):
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Generate Tailscale certificates for configured domains"""
 
-        # Import here to avoid circular imports
-        from djaploy.certificates import TailscaleDnsCertificate
-
-        domains = getattr(host_data, 'domains', [])
+        domains = host_data.get('domains', [])
         if not domains:
             return
 
-        app_user = getattr(host_data, 'app_user', project_config.app_user)
+        app_user = host_data.get('app_user') or project_config.app_user
         ssl_dir = f'/home/{app_user}/.ssl'
 
         # Generate certificates for Tailscale domains
         for domain_conf in domains:
-            if isinstance(domain_conf, TailscaleDnsCertificate):
+            if domain_conf.get('__class__') == 'TailscaleDnsCertificate':
+                identifier = domain_conf.get('identifier')
                 server.shell(
-                    name=f"Generate Tailscale certificate for {domain_conf.identifier}",
+                    name=f"Generate Tailscale certificate for {identifier}",
                     commands=[
-                        f'tailscale cert {domain_conf.identifier}',
+                        f'tailscale cert {identifier}',
                     ],
                     _sudo=True,
                     _chdir=ssl_dir,
@@ -77,28 +71,25 @@ class TailscaleModule(BaseModule):
         Sync/renew Tailscale certificates.
         Called by sync_certs management command.
         """
-        # Import here to avoid circular imports
-        from djaploy.certificates import TailscaleDnsCertificate
-
-        domains = getattr(host_data, 'domains', [])
+        domains = host_data.get('domains', [])
         if not domains:
             return
 
-        app_user = getattr(host_data, 'app_user', project_config.app_user)
+        app_user = host_data.get('app_user') or project_config.app_user
         ssl_dir = f'/home/{app_user}/.ssl'
 
         # Regenerate certificates for Tailscale domains
         for domain_conf in domains:
-            if isinstance(domain_conf, TailscaleDnsCertificate):
+            if domain_conf.get('__class__') == 'TailscaleDnsCertificate':
+                identifier = domain_conf.get('identifier')
                 server.shell(
-                    name=f"Renew Tailscale certificate for {domain_conf.identifier}",
+                    name=f"Renew Tailscale certificate for {identifier}",
                     commands=[
-                        f'tailscale cert {domain_conf.identifier}',
+                        f'tailscale cert {identifier}',
                     ],
                     _sudo=True,
                     _chdir=ssl_dir,
                 )
 
 
-# Make the module class available for the loader
 Module = TailscaleModule

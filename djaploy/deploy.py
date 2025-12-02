@@ -322,13 +322,16 @@ def _make_value_serializable(value):
 
     if is_dataclass(value) and not isinstance(value, type):
         # Handle dataclass objects (like BackupConfig) - flatten to dict with all fields
-        return {k: _make_value_serializable(v) for k, v in asdict(value).items()}
+        result = {k: _make_value_serializable(v) for k, v in asdict(value).items()}
+        result['__class__'] = value.__class__.__name__
+        return result
     elif hasattr(value, '__dict__') and not isinstance(value, type):
         # It's an object with attributes - flatten to dict
         result = {}
         for attr, attr_value in value.__dict__.items():
             if not attr.startswith('_'):
                 result[attr] = _make_value_serializable(attr_value)
+        result['__class__'] = value.__class__.__name__
         return result
     elif isinstance(value, list):
         # Process each item in the list
