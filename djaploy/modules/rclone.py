@@ -81,11 +81,11 @@ class RcloneModule(BaseModule):
     def _deploy_rclone_config(self, backup_config, app_user: str, host_data: Dict[str, Any]):
         """Deploy rclone configuration file"""
 
-        backup_type = getattr(backup_config, "type", "sftp")
-        backup_host = getattr(backup_config, "host", "")
-        backup_user = getattr(backup_config, "user", "")
-        backup_password = getattr(backup_config, "password", "")
-        backup_port = getattr(backup_config, "port", 22)
+        backup_type = backup_config.get("type", "sftp")
+        backup_host = backup_config.get("host", "")
+        backup_user = backup_config.get("user", "")
+        backup_password = backup_config.get("password", "")
+        backup_port = backup_config.get("port", 22)
         
         # Create rclone config content
         rclone_config = f"""[backup]
@@ -132,12 +132,12 @@ sha1sum_command = none"""
         """Deploy backup script"""
 
         # Get backup paths
-        db_path = getattr(backup_config, "db_path", None) or f"/home/{app_user}/dbs"
-        media_path = getattr(backup_config, "media_path", None) or f"/home/{app_user}/apps/{project_config.project_name}/media"
-        retention_days = getattr(backup_config, "retention_days", 30)
+        db_path = backup_config.get("db_path") or f"/home/{app_user}/dbs"
+        media_path = backup_config.get("media_path") or f"/home/{app_user}/apps/{project_config.project_name}/media"
+        retention_days = backup_config.get("retention_days", 30)
 
         # Get database names from config
-        databases = getattr(backup_config, "databases", ["default.db"])
+        databases = backup_config.get("databases", ["default.db"])
         if isinstance(databases, str):
             databases = [databases]
         
@@ -367,7 +367,7 @@ log_message "Backup completed successfully for {host_name}"
     def _setup_backup_cron(self, backup_config, app_user: str):
         """Setup backup cron job"""
 
-        schedule = getattr(backup_config, "schedule", "0 2 * * *")  # Default: 2 AM daily
+        schedule = backup_config.get("schedule", "0 2 * * *")  # Default: 2 AM daily
         
         # Remove existing backup cron jobs
         server.shell(

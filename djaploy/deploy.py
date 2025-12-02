@@ -318,20 +318,18 @@ def _preprocess_inventory(inventory_file: str) -> str:
 
 def _make_value_serializable(value):
     """Convert a value to a serializable form for inventory processing"""
-    if hasattr(value, '__dict__'):
-        # It's an object with attributes - convert to a dict representation
-        if hasattr(value, '__class__'):
-            obj_dict = {
-                '__class__': f"{value.__class__.__module__}.{value.__class__.__name__}",
-                '__dict__': {}
-            }
-            # Add key attributes that are commonly needed
-            for attr in ['identifier', 'domains', 'cert_file', 'key_file']:
-                if hasattr(value, attr):
-                    obj_dict['__dict__'][attr] = getattr(value, attr)
-            return obj_dict
-        else:
-            return str(value)
+    from dataclasses import is_dataclass, asdict
+
+    if is_dataclass(value) and not isinstance(value, type):
+        # Handle dataclass objects (like BackupConfig) - flatten to dict with all fields
+        return {k: _make_value_serializable(v) for k, v in asdict(value).items()}
+    elif hasattr(value, '__dict__') and not isinstance(value, type):
+        # It's an object with attributes - flatten to dict
+        result = {}
+        for attr, attr_value in value.__dict__.items():
+            if not attr.startswith('_'):
+                result[attr] = _make_value_serializable(attr_value)
+        return result
     elif isinstance(value, list):
         # Process each item in the list
         return [_make_value_serializable(item) for item in value]
