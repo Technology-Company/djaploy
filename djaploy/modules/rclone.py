@@ -3,6 +3,7 @@ Rclone module for djaploy - manages rclone-based backups
 """
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -100,11 +101,15 @@ shell_type = unix
 md5sum_command = none
 sha1sum_command = none"""
         
-        # Deploy configuration file
+        # Deploy configuration file using temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+            f.write(rclone_config)
+            temp_config_path = f.name
+
         files.put(
             name="Create rclone configuration",
+            src=temp_config_path,
             dest=f"/home/{app_user}/.config/rclone/rclone.conf",
-            content=rclone_config,
             user=app_user,
             group=app_user,
             mode="600",
@@ -146,11 +151,15 @@ sha1sum_command = none"""
             databases=databases
         )
         
-        # Deploy backup script
+        # Deploy backup script using temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(backup_script)
+            temp_script_path = f.name
+
         files.put(
             name="Create backup script",
+            src=temp_script_path,
             dest=f"/home/{app_user}/backup.sh",
-            content=backup_script,
             user=app_user,
             group=app_user,
             mode="755",
