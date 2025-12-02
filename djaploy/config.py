@@ -231,4 +231,6 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
             import os
             config["ssh_key"] = os.path.expanduser(config["ssh_key"])
 
+        config["name"] = name
+
         return super().__new__(cls, (name, config))
