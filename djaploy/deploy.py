@@ -50,29 +50,32 @@ def configure_server(config: DjaployConfig, inventory_file: str, **kwargs):
             os.unlink(processed_inventory_file)
 
 
-def deploy_project(config: DjaployConfig, 
+def deploy_project(config: DjaployConfig,
                   inventory_file: str,
                   mode: str = "latest",
                   release_tag: Optional[str] = None,
+                  skip_prepare: bool = False,
                   **kwargs):
     """
     Deploy project to servers
-    
+
     Args:
         config: DjaployConfig instance
         inventory_file: Path to the pyinfra inventory file
         mode: Deployment mode ("local", "latest", "release")
         release_tag: Release tag if mode is "release"
+        skip_prepare: Skip running prepare.py script (useful for non-deployment operations)
         **kwargs: Additional arguments
     """
-    
+
     # Validate configuration
     config.validate()
 
     # Run prepare script if it exists (BEFORE artifact creation)
-    prepare_script = config.djaploy_dir / "prepare.py"
-    if prepare_script.exists():
-        _run_prepare(prepare_script, config)
+    if not skip_prepare:
+        prepare_script = config.djaploy_dir / "prepare.py"
+        if prepare_script.exists():
+            _run_prepare(prepare_script, config)
 
     # Create artifact based on mode
     artifact_path = create_artifact(

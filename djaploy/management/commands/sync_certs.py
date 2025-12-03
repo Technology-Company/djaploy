@@ -33,6 +33,13 @@ class Command(BaseCommand):
             default=None,
             help="Directory containing inventory files (overrides settings)",
         )
+
+        parser.add_argument(
+            "--run-prepare",
+            action="store_true",
+            default=False,
+            help="Run prepare.py script before syncing (default: skip)",
+        )
     
     def handle(self, *args, **options):
         env = options["env"]
@@ -66,6 +73,7 @@ class Command(BaseCommand):
                 sync_config,
                 inventory_file,
                 mode="latest",  # Mode doesn't matter for sync_certs
+                skip_prepare=not options["run_prepare"],
             )
             
             self.stdout.write(
