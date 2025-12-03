@@ -55,10 +55,15 @@ class DjaployConfig:
     # Modules to enable
     modules: List[str] = field(default_factory=lambda: [
         "djaploy.modules.core",
-        "djaploy.modules.nginx", 
+        "djaploy.modules.nginx",
         "djaploy.modules.systemd"
     ])
-    
+
+    # Modules to use for sync_certs command
+    sync_certs_modules: List[str] = field(default_factory=lambda: [
+        "djaploy.modules.sync_certs",
+    ])
+
     # Module configurations
     module_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     
@@ -89,6 +94,9 @@ class DjaployConfig:
         # Add SSL module if SSL is enabled
         if self.ssl_enabled and "djaploy.modules.ssl" not in self.modules:
             self.modules.append("djaploy.modules.ssl")
+
+        if "djaploy.modules.tailscale" in self.modules and "djaploy.modules.tailscale" not in self.sync_certs_modules:
+            self.sync_certs_modules.append("djaploy.modules.tailscale")
     
     def get_deploy_files_dir(self) -> Path:
         """Get the deploy_files directory path"""

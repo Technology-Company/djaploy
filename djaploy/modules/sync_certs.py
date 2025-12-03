@@ -73,6 +73,11 @@ class SyncCertsModule(BaseModule):
             else:
                 cert_data = cert
 
+            cert_class = cert_data.get('__class__', '')
+            if cert_class == 'TailscaleDnsCertificate':
+                print(f"Skipping Tailscale certificate (managed by tailscale cert)")
+                return
+
             cert_identifier = cert_data.get('identifier')
 
             crt_file = cert_data.get('cert_file') or cert_data.get('op_crt')

@@ -62,10 +62,10 @@ class Command(BaseCommand):
             os.environ['OP_ACCOUNT'] = config.op_account
         
         self.stdout.write(f"Synchronizing certificates for {env}")
-        
-        # Create a temporary config that only uses sync_certs module
+
+        # Use sync_certs_modules from config (defaults to just sync_certs module)
         sync_config = config
-        sync_config.modules = ["djaploy.modules.sync_certs"]
+        sync_config.modules = config.sync_certs_modules
         
         # Run certificate synchronization
         try:
