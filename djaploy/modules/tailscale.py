@@ -50,8 +50,24 @@ class TailscaleModule(BaseModule):
         if not domains:
             return
 
+        # Check if any Tailscale certificates are configured
+        has_tailscale_certs = any(
+            d.get('__class__') == 'TailscaleDnsCertificate' for d in domains
+        )
+        if not has_tailscale_certs:
+            return
+
         app_user = host_data.get('app_user') or project_config.app_user
         ssl_dir = f'/home/{app_user}/.ssl'
+
+        # Ensure SSL directory exists
+        files.directory(
+            name="Create SSL certificates directory",
+            path=ssl_dir,
+            user=app_user,
+            group=app_user,
+            _sudo=True,
+        )
 
         # Generate certificates for Tailscale domains
         for domain_conf in domains:

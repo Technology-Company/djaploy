@@ -96,7 +96,7 @@ class DjaployConfig:
             self.modules.append("djaploy.modules.ssl")
 
         if "djaploy.modules.tailscale" in self.modules and "djaploy.modules.tailscale" not in self.sync_certs_modules:
-            self.sync_certs_modules.append("djaploy.modules.tailscale")
+            self.sync_certs_modules.insert(0, "djaploy.modules.tailscale")
     
     def get_deploy_files_dir(self) -> Path:
         """Get the deploy_files directory path"""
