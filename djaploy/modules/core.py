@@ -394,8 +394,10 @@ class CoreModule(BaseModule):
                 domain_name = domain.identifier if hasattr(domain, 'identifier') else str(domain.domains[0])
                 alt_names = domain.domains if hasattr(domain, 'domains') else [domain_name]
             elif isinstance(domain, dict):
-                domain_name = domain.get('identifier', domain.get('name', 'localhost'))
-                alt_names = domain.get('domains', [domain_name])
+                # pyinfra serializes objects with __class__ and __dict__ keys
+                inner = domain.get('__dict__', domain)
+                domain_name = inner.get('identifier', inner.get('name', 'localhost'))
+                alt_names = inner.get('domains', [domain_name])
             else:
                 domain_name = str(domain)
                 alt_names = [domain_name]
