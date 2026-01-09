@@ -342,6 +342,9 @@ def _make_value_serializable(value):
     elif isinstance(value, dict):
         # Process each value in the dict
         return {k: _make_value_serializable(v) for k, v in value.items()}
+    elif isinstance(value, Path):
+        # Convert Path objects to strings
+        return str(value)
     else:
         # Already serializable (str, int, bool, etc.)
         return value

@@ -405,17 +405,20 @@ class CoreModule(BaseModule):
             # Create certificate and key paths
             cert_path = f"/home/{app_user}/.ssl/{domain_name}.crt"
             key_path = f"/home/{app_user}/.ssl/{domain_name}.key"
-            
-            # Generate self-signed certificate
+
+            # Generate self-signed certificate if it doesn't exist or is expired
+            # openssl x509 -checkend 0 returns 1 if cert is expired
             server.shell(
                 name=f"Generate self-signed SSL certificate for {domain_name}",
                 commands=[
+                    f"if [ ! -f {cert_path} ] || ! openssl x509 -checkend 0 -noout -in {cert_path} 2>/dev/null; then "
                     f"openssl req -x509 -newkey rsa:4096 -keyout {key_path} -out {cert_path} "
                     f"-days 365 -nodes -subj '/CN={domain_name}' "
-                    f"-addext 'subjectAltName=DNS:{',DNS:'.join(alt_names)}'",
-                    f"chown {app_user}:{app_user} {cert_path} {key_path}",
-                    f"chmod 600 {key_path}",
-                    f"chmod 644 {cert_path}",
+                    f"-addext 'subjectAltName=DNS:{',DNS:'.join(alt_names)}' && "
+                    f"chown {app_user}:{app_user} {cert_path} {key_path} && "
+                    f"chmod 600 {key_path} && "
+                    f"chmod 644 {cert_path}; "
+                    f"else echo 'Valid certificate exists at {cert_path}, skipping'; fi",
                 ],
                 _sudo=True,
             )
