@@ -1,124 +1,108 @@
 # djaploy
 
-A modular Django deployment system based on pyinfra, designed to standardize and simplify infrastructure management across Django projects.
+[![PyPI Version](https://badgen.net/pypi/v/djaploy)](https://pypi.org/project/djaploy/)
+[![Python Versions](https://badgen.net/pypi/python/djaploy)](https://pypi.org/project/djaploy/)
+[![License](https://badgen.net/badge/license/MIT/blue)](https://github.com/Technology-Company/djaploy/blob/main/LICENSE)
+[![Last Commit](https://badgen.net/github/last-commit/Technology-Company/djaploy)](https://github.com/Technology-Company/djaploy/commits)
+
+A modular Django deployment system based on [pyinfra](https://pyinfra.com/), designed to standardize and simplify infrastructure management across Django projects.
 
 ## Features
 
-- **Modular Architecture**: Extensible plugin system for deployment components
-- **Django Integration**: Seamless integration via Django management commands  
-- **Python Compilation Support**: Compile Python from source for specific versions
-- **Multiple Deployment Modes**: Support for `--local`, `--latest`, and `--release` deployments
-- **Infrastructure as Code**: Define infrastructure using Python with pyinfra
-- **Git-based Artifacts**: Automated artifact creation from git repository
+- **Modular Architecture** — Extensible plugin system for deployment components
+- **Django Integration** — Seamless integration via Django management commands
+- **Multiple Deployment Modes** — Support for `--local`, `--latest`, and `--release` deployments
+- **Infrastructure as Code** — Define infrastructure using Python with pyinfra
+- **Git-based Artifacts** — Automated artifact creation from git repository
+- **SSL Management** — Built-in support for SSL certificates and Let's Encrypt
+- **Python Compilation** — Optionally compile Python from source for specific versions
 
 ## Installation
-
-### From PyPI (once published)
 
 ```bash
 pip install djaploy
 ```
 
 Or with Poetry:
+
 ```bash
 poetry add djaploy
 ```
 
-### Development Installation
-
-For testing djaploy locally without publishing to PyPI:
+### Optional extras
 
 ```bash
-# Clone the repository
-git clone https://github.com/techco-fi/djaploy.git
-cd djaploy
-
-# Install in editable mode
-pip install -e .
-
-# Or with Poetry  
-poetry install
-```
-
-Then in your Django project:
-```bash
-# Using pip
-pip install -e /path/to/djaploy
-
-# Or add as a local dependency in pyproject.toml
-[tool.poetry.dependencies]
-djaploy = {path = "../djaploy", develop = true}
+pip install djaploy[certificates]   # Let's Encrypt / certbot support
+pip install djaploy[bunny]          # Bunny DNS certbot plugin
 ```
 
 ## Quick Start
 
-### 1. Project Structure
+### 1. Add to Django settings
+
+```python
+INSTALLED_APPS = [
+    # ...
+    "djaploy",
+]
+
+# Required paths
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_DIR = BASE_DIR
+GIT_DIR = PROJECT_DIR.parent
+DJAPLOY_CONFIG_DIR = PROJECT_DIR / "infra"
+```
+
+### 2. Create project structure
 
 ```
 your-django-project/
 ├── manage.py
 ├── your_app/
 │   └── settings.py
-└── djaploy/                    # Deployment configuration
-    ├── config.py              # Main configuration
-    ├── inventory/             # Host definitions
+└── infra/                          # Deployment configuration
+    ├── config.py                   # Main configuration
+    ├── inventory/                  # Host definitions per environment
     │   ├── production.py
-    │   └── staging.py  
-    └── deploy_files/          # Environment-specific files
+    │   └── staging.py
+    └── deploy_files/               # Environment-specific files
         ├── production/
         │   └── etc/systemd/system/app.service
         └── staging/
 ```
 
-### 2. Django Settings
+### 3. Configure deployment
 
-Add to your Django `settings.py`:
-
-```python
-# Required: Set project paths
-BASE_DIR = '/path/to/django'  
-PROJECT_DIR = BASE_DIR # folder containing manage.py
-DJAPLOY_CONFIG_DIR = BASE_DIR + '/djaploy'
-GIT_DIR = BASE_DIR.parent  # Git repository root
-```
-
-### 3. Create Configuration
-
-Create `djaploy/config.py`:
+**infra/config.py**:
 
 ```python
 from djaploy.config import DjaployConfig
 from pathlib import Path
 
 config = DjaployConfig(
-    # Required fields
     project_name="myapp",
-    djaploy_dir=Path(__file__).parent,  # REQUIRED: This djaploy directory
-    manage_py_path=Path("manage.py"),   # REQUIRED: Path to manage.py (relative to project root)
-    
-    # Python settings
+    djaploy_dir=Path(__file__).parent,
+    manage_py_path=Path("manage.py"),
+
     python_version="3.11",
-    python_compile=False,  # Set True to compile from source
-    
-    # Server settings
     app_user="app",
     ssh_user="deploy",
-    
-    # Modules to use
+
     modules=[
-        "djaploy.modules.core",      # Core setup (required)
-        "djaploy.modules.nginx",     # Web server
-        "djaploy.modules.systemd",   # Service management
+        "djaploy.modules.core",
+        "djaploy.modules.nginx",
+        "djaploy.modules.systemd",
     ],
-    
-    # Services to manage
+
     services=["myapp", "myapp-worker"],
 )
 ```
 
-### 4. Define Inventory
+### 4. Define inventory
 
-Create `djaploy/inventory/production.py`:
+**infra/inventory/production.py**:
 
 ```python
 from djaploy.config import HostConfig
@@ -135,12 +119,12 @@ hosts = [
 ]
 ```
 
-### 5. Deploy Files
+### 5. Deploy files
 
-Place service files in `djaploy/deploy_files/production/`:
+Place environment-specific configuration files in `deploy_files/` — these are copied to the server during deployment:
 
 ```ini
-# etc/systemd/system/myapp.service
+# deploy_files/production/etc/systemd/system/myapp.service
 [Unit]
 Description=My Django App
 After=network.target
@@ -158,76 +142,101 @@ WantedBy=multi-user.target
 
 ## Usage
 
-### Configure Server
+### Configure a server
 
 ```bash
 python manage.py configureserver --env production
 ```
 
-This will:
-- Create application user
-- Install/compile Python  
-- Install Poetry
-- Set up directory structure
+Sets up the application user, installs Python and Poetry, and prepares the directory structure.
 
-### Deploy Application
+### Deploy
 
 ```bash
-# Deploy local changes (for development)
+# Deploy local changes (development)
 python manage.py deploy --env production --local
 
 # Deploy latest git commit
 python manage.py deploy --env production --latest
 
-# Deploy specific release
+# Deploy a specific release
 python manage.py deploy --env production --release v1.0.0
 ```
 
-Deployment process:
-1. Creates tar.gz artifact from git
+Deployment flow:
+
+1. Creates a tar.gz artifact from git
 2. Uploads to servers
 3. Extracts application code
-4. Installs dependencies
-5. Runs migrations
-6. Collects static files  
-7. Restarts services
+4. Copies environment-specific deploy files (nginx, systemd, etc.)
+5. Installs dependencies via Poetry
+6. Runs migrations
+7. Collects static files
+8. Restarts services
 
-## Module System
+### Certificate management
 
-Djaploy uses a modular architecture where each component (nginx, systemd, backups, etc.) is a separate module that can be enabled or disabled per project.
+```bash
+python manage.py update_certs           # Update certificate definitions
+python manage.py sync_certs --env production  # Sync certificates
+```
 
-### Available Modules
+### Verify configuration
 
-- `nginx`: NGINX web server configuration
-- `systemd`: Systemd service management
-- `litestream`: Litestream database backups
-- `rclone`: Rclone-based backup system
-- `tailscale`: Tailscale networking
-- `ssl`: SSL certificate management
-- `python_build`: Python compilation from source
+```bash
+python manage.py verify --verbose
+```
 
-### Creating Custom Modules
+## Modules
 
-Projects can create their own modules by extending the base module class:
+djaploy uses a modular architecture — each component is a separate module that can be enabled or disabled per project.
+
+### Built-in modules
+
+| Module | Description |
+|--------|-------------|
+| `djaploy.modules.core` | Core setup: users, Python, Poetry, artifact deployment, migrations |
+| `djaploy.modules.nginx` | Nginx web server configuration |
+| `djaploy.modules.systemd` | Systemd service management |
+| `djaploy.modules.sync_certs` | SSL certificate syncing |
+| `djaploy.modules.cert_renewal` | Certificate renewal automation |
+| `djaploy.modules.litestream` | Litestream database replication |
+| `djaploy.modules.rclone` | Rclone-based backups |
+| `djaploy.modules.tailscale` | Tailscale networking |
+
+### Custom modules
+
+Extend `BaseModule` to create project-specific deployment logic:
 
 ```python
 from djaploy.modules.base import BaseModule
 
-class MyCustomModule(BaseModule):
+class MyModule(BaseModule):
     def configure_server(self, host):
         # Server configuration logic
         pass
-    
+
     def deploy(self, host, artifact_path):
         # Deployment logic
         pass
+```
+
+Add it to your config:
+
+```python
+config = DjaployConfig(
+    modules=[
+        "djaploy.modules.core",
+        "myproject.infra.modules.custom",
+    ],
+)
 ```
 
 ## Project Customization
 
 ### prepare.py
 
-Projects can include a `prepare.py` file for local build steps before deployment:
+Projects can include a `prepare.py` file for local build steps that run before deployment:
 
 ```python
 # prepare.py
@@ -238,10 +247,24 @@ def prepare():
     run_command("python manage.py collectstatic --noinput")
 ```
 
-### Custom Deploy Files
+### Custom deploy files
 
-Projects can include environment-specific configuration files in a `deploy_files/` directory that will be copied to the server during deployment.
+Projects can include environment-specific configuration files in a `deploy_files/` directory that will be copied to the server during deployment. The directory structure mirrors the target filesystem layout (e.g. `deploy_files/production/etc/nginx/sites-available/myapp` gets copied to `/etc/nginx/sites-available/myapp` on the server).
+
+## Development
+
+```bash
+git clone https://github.com/Technology-Company/djaploy.git
+cd djaploy
+poetry install
+```
+
+To use a local development copy in another project:
+
+```bash
+pip install -e /path/to/djaploy
+```
 
 ## License
 
-MIT
+[MIT](LICENSE)
