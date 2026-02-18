@@ -4,6 +4,7 @@ Main deployment functions for djaploy
 
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -241,12 +242,12 @@ def _run_pyinfra(script_path: str, inventory_path: str, data: dict = None):
 
     current_python_path = env.get('PYTHONPATH', '')
     if current_python_path:
-        env['PYTHONPATH'] = f"{project_dir}:{current_python_path}"
+        env['PYTHONPATH'] = f"{project_dir}{os.pathsep}{current_python_path}"
     else:
         env['PYTHONPATH'] = project_dir
     
     cmd = [
-        "python",
+        sys.executable,
         str(django_pyinfra_path),
         "-y",
     ]
@@ -359,6 +360,6 @@ def _run_prepare(prepare_script: Path, config: DjaployConfig):
     
     try:
         # Run the prepare script
-        subprocess.run(["python", str(prepare_script)], check=True)
+        subprocess.run([sys.executable, str(prepare_script)], check=True)
     finally:
         os.chdir(original_dir)

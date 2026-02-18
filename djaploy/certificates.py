@@ -5,6 +5,7 @@ SSL Certificate management for djaploy
 import os
 import json
 import ssl
+import stat
 import datetime
 import re
 import subprocess
@@ -284,8 +285,8 @@ class BunnyDnsCertificate(DnsCertificate):
             secret_data = f'dns_bunny_api_key = {OpSecret(bunny_api_key_secret)}'
             file.write(secret_data)
 
-        # Set correct permissions
-        os.chmod(bunny_creds_file, 400)
+        # Set correct permissions (read-only for owner)
+        os.chmod(bunny_creds_file, stat.S_IRUSR)
 
         # Build certbot command
         command = [
@@ -657,7 +658,7 @@ echo "  Challenge file created: {webroot}/$CERTBOT_TOKEN"
         auth_hook_path = os.path.join(certbot_dir, 'auth_hook.sh')
         with open(auth_hook_path, 'w') as f:
             f.write(auth_script)
-        os.chmod(auth_hook_path, 0o755)
+        os.chmod(auth_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         # Cleanup hook script
         cleanup_script = f'''#!/bin/bash
@@ -674,7 +675,7 @@ echo "  Challenge file removed: {webroot}/$CERTBOT_TOKEN"
         cleanup_hook_path = os.path.join(certbot_dir, 'cleanup_hook.sh')
         with open(cleanup_hook_path, 'w') as f:
             f.write(cleanup_script)
-        os.chmod(cleanup_hook_path, 0o755)
+        os.chmod(cleanup_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         return auth_hook_path, cleanup_hook_path
 

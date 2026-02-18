@@ -2,7 +2,9 @@
 Artifact creation for deployments
 """
 
+import gzip
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -52,13 +54,22 @@ def _create_local_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
     os.chdir(config.git_dir)
     
     try:
-        # Create artifact from git files (including uncommitted changes)
-        subprocess.run(
-            "git ls-files --others --exclude-standard --cached | tar Tzcf - {}".format(artifact_file),
-            shell=True,
+        # Get list of git-tracked and untracked (non-ignored) files
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "--cached"],
+            capture_output=True,
             check=True,
+            text=True,
         )
-        
+        file_list = [f for f in result.stdout.splitlines() if f.strip()]
+
+        # Create tar.gz archive using Python's tarfile module
+        import tarfile
+        with tarfile.open(str(artifact_file), "w:gz") as tar:
+            for f in file_list:
+                if os.path.exists(f):
+                    tar.add(f)
+
         return artifact_file
     finally:
         os.chdir(original_dir)
@@ -150,11 +161,11 @@ def _create_git_artifact(config: DjaployConfig, artifact_dir: Path, git_ref: str
             # No extra files, use original approach
             subprocess.run(cmd, check=True)
 
-        # Compress the tar file
-        subprocess.run(
-            ["gzip", "-f", str(artifact_tar)],
-            check=True,
-        )
+        # Compress the tar file using Python's gzip module (cross-platform)
+        with open(str(artifact_tar), 'rb') as f_in:
+            with gzip.open(str(artifact_file), 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        os.remove(str(artifact_tar))
 
         return artifact_file
     finally:

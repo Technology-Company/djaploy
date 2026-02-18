@@ -3,6 +3,8 @@ Django management command for synchronizing SSL certificates
 """
 
 import os
+from pathlib import Path
+
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import deploy_project
@@ -51,7 +53,7 @@ class Command(BaseCommand):
         inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
         
         # Build inventory file path
-        inventory_file = f"{inventory_dir}/{env}.py"
+        inventory_file = str(Path(inventory_dir) / f"{env}.py")
         
         # Check if inventory file exists
         if not os.path.exists(inventory_file):

@@ -3,6 +3,8 @@ Django management command for configuring servers
 """
 
 import os
+from pathlib import Path
+
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import configure_server as djaploy_configure
@@ -41,7 +43,7 @@ class Command(BaseCommand):
         
         inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
         
-        inventory_file = f"{inventory_dir}/{env}.py"
+        inventory_file = str(Path(inventory_dir) / f"{env}.py")
         
         if not os.path.exists(inventory_file):
             raise CommandError(f"Inventory file not found: {inventory_file}")

@@ -3,6 +3,8 @@ Django management command for deploying applications
 """
 
 import os
+from pathlib import Path
+
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import deploy_project as djaploy_deploy
@@ -20,8 +22,8 @@ class Command(BaseCommand):
             help="Specify the environment to deploy to",
         )
         
-        # Add mutually exclusive deployment mode options
-        group = parser.add_mutually_exclusive_group(required=True)
+        # Add mutually exclusive deployment mode options (--latest is the default)
+        group = parser.add_mutually_exclusive_group()
         group.add_argument(
             "--local",
             action="store_true",
@@ -30,7 +32,8 @@ class Command(BaseCommand):
         group.add_argument(
             "--latest",
             action="store_true",
-            help="Deploy the latest git HEAD commit",
+            default=True,
+            help="Deploy the latest git HEAD commit (default)",
         )
         group.add_argument(
             "--release",
@@ -62,24 +65,22 @@ class Command(BaseCommand):
         inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
         
         # Build inventory file path
-        inventory_file = f"{inventory_dir}/{env}.py"
+        inventory_file = str(Path(inventory_dir) / f"{env}.py")
         
         # Check if inventory file exists
         if not os.path.exists(inventory_file):
             raise CommandError(f"Inventory file not found: {inventory_file}")
         
-        # Determine deployment mode
+        # Determine deployment mode (--latest is the default)
         if options["local"]:
             mode = "local"
-            release_tag = None
-        elif options["latest"]:
-            mode = "latest"
             release_tag = None
         elif options["release"]:
             mode = "release"
             release_tag = options["release"]
         else:
-            raise CommandError("Must specify one of --local, --latest, or --release")
+            mode = "latest"
+            release_tag = None
         
         self.stdout.write(f"Deploying to {env} using mode: {mode}")
         if release_tag:
