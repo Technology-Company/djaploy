@@ -287,9 +287,13 @@ class CoreModule(BaseModule):
             for group in exclude_groups:
                 poetry_cmd += f" --without {group}"
         
+        python_version = project_config.python_version
+
         commands = [
             # First configure Poetry to not use in-project virtualenvs on the server
             f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
+            # Ensure the virtualenv uses the configured Python version
+            f"/home/{app_user}/.local/bin/poetry env use python{python_version}",
         ]
         
         # Optionally regenerate the lock file before installation
