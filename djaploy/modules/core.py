@@ -298,12 +298,18 @@ class CoreModule(BaseModule):
         
         # Optionally regenerate the lock file before installation
         poetry_lock_enabled = core_config.get("poetry_lock", False)
-        poetry_lock_args = core_config.get("poetry_lock_args", "--no-update")
-        
+        poetry_lock_args = core_config.get("poetry_lock_args", None)
+
         if poetry_lock_enabled:
-            lock_cmd = f"/home/{app_user}/.local/bin/poetry lock"
+            poetry_bin = f"/home/{app_user}/.local/bin/poetry"
             if poetry_lock_args:
-                lock_cmd = f"{lock_cmd} {poetry_lock_args}".strip()
+                lock_cmd = f"{poetry_bin} lock {poetry_lock_args}"
+            else:
+                # --no-update (Poetry 1.x) was renamed to --no-upgrade (Poetry 2.x)
+                lock_cmd = (
+                    f"{poetry_bin} lock --no-upgrade 2>/dev/null"
+                    f" || {poetry_bin} lock --no-update"
+                )
             commands.append(lock_cmd)
         
         # Finally install the dependencies
