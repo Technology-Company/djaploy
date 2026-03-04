@@ -70,9 +70,10 @@ class NotificationsModule(BaseModule):
             webhook_url: Webhook URL (required)
             channel: Optional channel override (Slack only)
         changelog_generator: 'simple' or 'llm' (default: 'simple')
-        changelog_config:
-            api_key: Mistral API key (required for 'llm')
-            model: Model to use (default: devstral-small-2505)
+         changelog_config:
+              api_key: LLM API key (required for 'llm')
+              api_url: API endpoint (default: Mistral)
+              model: Model to use (default: devstral-small-latest)
         notify_environments: List of environments to notify (default: all)
         notify_on_failure: Whether to send notifications on failure (default: True)
     """

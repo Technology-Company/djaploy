@@ -31,10 +31,10 @@ class SimpleChangelogGenerator(ChangelogGenerator):
 
 
 class LLMChangelogGenerator(ChangelogGenerator):
-    """Uses Mistral LLM API to summarize commits"""
+    """Uses LLM API to summarize commits (OpenAI-compatible endpoints)"""
 
-    DEFAULT_MODEL = "devstral-small-2505"
-    API_URL = "https://api.mistral.ai/v1/chat/completions"
+    DEFAULT_API_URL = "https://api.mistral.ai/v1/chat/completions"
+    DEFAULT_MODEL = "devstral-small-latest"
 
     DEFAULT_PROMPT = """You are a technical writer creating a changelog for a software release.
 
@@ -55,8 +55,9 @@ Rules:
 
 Output:"""
 
-    def __init__(self, api_key: str, model: Optional[str] = None, prompt_template: Optional[str] = None):
+    def __init__(self, api_key: str, model: Optional[str] = None, prompt_template: Optional[str] = None, api_url: Optional[str] = None):
         self.api_key = str(OpSecret(api_key))
+        self.api_url = api_url or self.DEFAULT_API_URL
         self.model = model or self.DEFAULT_MODEL
         self.prompt_template = prompt_template or self.DEFAULT_PROMPT
 
@@ -78,7 +79,7 @@ Output:"""
         }
 
         request = urllib.request.Request(
-            self.API_URL,
+            self.api_url,
             data=json.dumps(data).encode('utf-8'),
             headers=headers,
             method='POST'
@@ -106,6 +107,7 @@ def get_changelog_generator(generator_type: str = "simple", config: Optional[Dic
             api_key=api_key,
             model=config.get("model"),
             prompt_template=config.get("prompt_template"),
+            api_url=config.get("api_url"),
         )
 
     else:
