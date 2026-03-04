@@ -3,6 +3,19 @@ Utility classes for djaploy
 """
 
 
+def python_string(value):
+    """Return a safely escaped Python string literal.
+
+    Uses triple quotes for values containing newlines to preserve
+    readable formatting. Uses repr() for everything else.
+    """
+    s = str(value)
+    if '\n' in s:
+        escaped = s.replace('\\', '\\\\').replace('"""', r'\"\"\"')
+        return f'"""{escaped}"""'
+    return repr(s)
+
+
 class StringLike:
     """
     Base class for string-like objects that can be used in place of strings

@@ -73,7 +73,8 @@ class OpSecret(StringLike):
             )
 
         for key, value in zip(keys, values):
-            OpSecret._secret_values[key] = value
+            # Replicate json.loads() behavior: convert literal \n to real newlines
+            OpSecret._secret_values[key] = value.replace(r'\n', '\n')
 
     @staticmethod
     def _create_secret_reference(value):
