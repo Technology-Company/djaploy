@@ -40,19 +40,20 @@ class LLMChangelogGenerator(ChangelogGenerator):
 
 Given the following git commit messages, create a concise, user-friendly changelog summary.
 
-Guidelines:
-- Group related changes together
-- Use clear, non-technical language where possible
-- Focus on what changed from a user's perspective
-- Use bullet points
-- Keep it brief (3-7 bullet points max)
-- Don't include commit hashes or technical details
-- Start each point with a verb (Added, Fixed, Updated, Improved, Removed)
+Rules:
+1. Format: Output ONLY raw bullet points. No introductions, no greetings, no conclusions.
+2. Structure: Start every bullet point with a strong action verb followed by a colon (e.g., Added, Fixed, Updated, Improved, Removed, Resolved). 
+   - Example: "- Added: Support for user avatars."
+3. Distillation: Group similar changes together into a single, cohesive point.
+4. Constraint: Maximum of 7 bullet points. Prioritize the most impactful changes.
+5. Filtering: Ignore trivial commits, merge commits, WIPs, and minor typos.
+6. Language: Use simple, clear language. Do not include commit hashes, file names, or deep technical jargon.
 
-Commit messages:
+<commits>
 {commits}
+</commits>
 
-Changelog:"""
+Output:"""
 
     def __init__(self, api_key: str, model: Optional[str] = None, prompt_template: Optional[str] = None):
         self.api_key = str(OpSecret(api_key))
