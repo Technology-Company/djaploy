@@ -71,9 +71,8 @@ class NotificationsModule(BaseModule):
             channel: Optional channel override (Slack only)
         changelog_generator: 'simple' or 'llm' (default: 'simple')
         changelog_config:
-            api_key: API key for LLM (required for 'llm')
-            provider: 'anthropic' or 'openai' (default: 'anthropic')
-            model: Model to use (optional, default: claude-3-haiku-20240307)
+            api_key: Mistral API key (required for 'llm')
+            model: Model to use (default: devstral-small-2505)
         notify_environments: List of environments to notify (default: all)
         notify_on_failure: Whether to send notifications on failure (default: True)
     """

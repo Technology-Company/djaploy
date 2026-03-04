@@ -53,17 +53,11 @@ class SimpleChangelogGenerator(ChangelogGenerator):
 
 class LLMChangelogGenerator(ChangelogGenerator):
     """
-    Uses LLM API to summarize commits.
-
-    Supports Anthropic (Claude) and OpenAI APIs.
-    Falls back to SimpleChangelogGenerator if API call fails.
+    Uses Mistral LLM API to summarize commits.
     """
 
-    DEFAULT_ANTHROPIC_MODEL = "claude-3-haiku-20240307"
-    DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-
-    ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-    OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+    DEFAULT_MODEL = "devstral-small-2505"
+    API_URL = "https://api.mistral.ai/v1/chat/completions"
 
     DEFAULT_PROMPT = """You are a technical writer creating a changelog for a software release.
 
@@ -86,90 +80,39 @@ Changelog:"""
     def __init__(
         self,
         api_key: str,
-        provider: str = "anthropic",
         model: Optional[str] = None,
         prompt_template: Optional[str] = None,
     ):
         """
-        Initialize LLM changelog generator.
+        Initialize Mistral LLM changelog generator.
 
         Args:
-            api_key: API key for the LLM service
-            provider: "anthropic" or "openai" (default: "anthropic")
-            model: Model to use (optional, uses default for provider)
+            api_key: Mistral API key
+            model: Model to use (default: devstral-small-2505)
             prompt_template: Custom prompt template with {commits} placeholder
         """
         self.api_key = str(api_key)  # Convert StringLike (OpSecret) to string
-        self.provider = provider.lower()
-
-        if self.provider == "anthropic":
-            self.model = model or self.DEFAULT_ANTHROPIC_MODEL
-            self.api_url = self.ANTHROPIC_API_URL
-        elif self.provider == "openai":
-            self.model = model or self.DEFAULT_OPENAI_MODEL
-            self.api_url = self.OPENAI_API_URL
-        else:
-            raise ValueError(f"Unsupported provider: {provider}. Use 'anthropic' or 'openai'")
-
+        self.model = model or self.DEFAULT_MODEL
         self.prompt_template = prompt_template or self.DEFAULT_PROMPT
-        self._fallback = SimpleChangelogGenerator()
 
     def generate(self, commits: str) -> str:
         """
-        Generate changelog using LLM API.
-
-        Falls back to SimpleChangelogGenerator if API call fails.
+        Generate changelog using Mistral API.
 
         Args:
             commits: Raw commit messages (one per line)
 
         Returns:
-            LLM-generated changelog or simple bullet list on failure
+            LLM-generated changelog
+
+        Raises:
+            Exception: If API call fails
         """
         if not commits or not commits.strip():
             return "No changes"
 
-        try:
-            prompt = self.prompt_template.format(commits=commits)
+        prompt = self.prompt_template.format(commits=commits)
 
-            if self.provider == "anthropic":
-                return self._call_anthropic(prompt)
-            else:
-                return self._call_openai(prompt)
-
-        except Exception as e:
-            print(f"[CHANGELOG] Warning: LLM API call failed, falling back to simple generator: {e}")
-            return self._fallback.generate(commits)
-
-    def _call_anthropic(self, prompt: str) -> str:
-        """Call Anthropic Claude API"""
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-        }
-
-        data = {
-            "model": self.model,
-            "max_tokens": 1024,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        }
-
-        request = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-
-        with urllib.request.urlopen(request, timeout=30) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            return result["content"][0]["text"].strip()
-
-    def _call_openai(self, prompt: str) -> str:
-        """Call OpenAI API"""
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -184,7 +127,7 @@ Changelog:"""
         }
 
         request = urllib.request.Request(
-            self.api_url,
+            self.API_URL,
             data=json.dumps(data).encode('utf-8'),
             headers=headers,
             method='POST'
@@ -205,7 +148,7 @@ def get_changelog_generator(
     Args:
         generator_type: "simple" or "llm"
         config: Configuration dict for the generator
-            For 'llm': api_key (required), provider, model, prompt_template
+            For 'llm': api_key (required), model, prompt_template
 
     Returns:
         ChangelogGenerator instance
@@ -223,7 +166,6 @@ def get_changelog_generator(
 
         return LLMChangelogGenerator(
             api_key=api_key,
-            provider=config.get("provider", "anthropic"),
             model=config.get("model"),
             prompt_template=config.get("prompt_template"),
         )
