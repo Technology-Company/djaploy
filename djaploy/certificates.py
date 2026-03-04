@@ -3,8 +3,8 @@ SSL Certificate management for djaploy
 """
 
 import os
-import json
 import ssl
+import uuid
 import stat
 import datetime
 import re
@@ -49,15 +49,31 @@ class OpSecret(StringLike):
             OpSecret._secret_values = {k: "" for k in OpSecret._secret_mapping.keys()}
             return
             
-        secrets_as_json = json.dumps(OpSecret._secret_mapping)
+        # Use a delimiter-based template instead of JSON to avoid issues
+        # with special characters (like ") in secret values breaking JSON parsing.
+        # The UUID ensures the delimiter is unique per run.
+        delimiter = f"djaploy-delimit-{uuid.uuid4()}"
+        keys = list(OpSecret._secret_mapping.keys())
+        references = [OpSecret._secret_mapping[k] for k in keys]
+        template = delimiter.join(references)
+
         output = subprocess.run(
-            ["op", "inject"], input=secrets_as_json, capture_output=True, text=True
+            ["op", "inject"], input=template, capture_output=True, text=True
         )
         if output.returncode != 0:
             raise ValueError(
-                f"{output.stderr}\nFailed to fetch secrets: {secrets_as_json}"
+                f"{output.stderr}\nFailed to fetch secrets from 1Password"
             )
-        OpSecret._secret_values = json.loads(output.stdout)
+
+        # Strip trailing newline added by op inject CLI before splitting
+        values = output.stdout.rstrip("\n").split(delimiter)
+        if len(values) != len(keys):
+            raise ValueError(
+                f"Expected {len(keys)} secrets but got {len(values)} values from 1Password"
+            )
+
+        for key, value in zip(keys, values):
+            OpSecret._secret_values[key] = value
 
     @staticmethod
     def _create_secret_reference(value):
