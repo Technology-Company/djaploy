@@ -8,42 +8,21 @@ import urllib.error
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
+from .certificates import OpSecret
+
 
 class ChangelogGenerator(ABC):
     """Base class for changelog generators"""
 
     @abstractmethod
     def generate(self, commits: str) -> str:
-        """
-        Generate changelog from commit messages.
-
-        Args:
-            commits: Raw commit messages (one per line)
-
-        Returns:
-            Formatted changelog string
-        """
         pass
 
 
 class SimpleChangelogGenerator(ChangelogGenerator):
-    """
-    Returns commits as bullet list (default).
-
-    This is the simplest changelog generator that formats
-    commit messages as a bulleted list.
-    """
+    """Returns commits as bullet list"""
 
     def generate(self, commits: str) -> str:
-        """
-        Generate changelog as a simple bullet list.
-
-        Args:
-            commits: Raw commit messages (one per line)
-
-        Returns:
-            Formatted changelog with bullet points
-        """
         if not commits or not commits.strip():
             return "No changes"
 
@@ -52,9 +31,7 @@ class SimpleChangelogGenerator(ChangelogGenerator):
 
 
 class LLMChangelogGenerator(ChangelogGenerator):
-    """
-    Uses Mistral LLM API to summarize commits.
-    """
+    """Uses Mistral LLM API to summarize commits"""
 
     DEFAULT_MODEL = "devstral-small-2505"
     API_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -77,37 +54,12 @@ Commit messages:
 
 Changelog:"""
 
-    def __init__(
-        self,
-        api_key: str,
-        model: Optional[str] = None,
-        prompt_template: Optional[str] = None,
-    ):
-        """
-        Initialize Mistral LLM changelog generator.
-
-        Args:
-            api_key: Mistral API key
-            model: Model to use (default: devstral-small-2505)
-            prompt_template: Custom prompt template with {commits} placeholder
-        """
-        self.api_key = str(api_key)  # Convert StringLike (OpSecret) to string
+    def __init__(self, api_key: str, model: Optional[str] = None, prompt_template: Optional[str] = None):
+        self.api_key = str(OpSecret(api_key))
         self.model = model or self.DEFAULT_MODEL
         self.prompt_template = prompt_template or self.DEFAULT_PROMPT
 
     def generate(self, commits: str) -> str:
-        """
-        Generate changelog using Mistral API.
-
-        Args:
-            commits: Raw commit messages (one per line)
-
-        Returns:
-            LLM-generated changelog
-
-        Raises:
-            Exception: If API call fails
-        """
         if not commits or not commits.strip():
             return "No changes"
 
@@ -121,9 +73,7 @@ Changelog:"""
         data = {
             "model": self.model,
             "max_tokens": 1024,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
+            "messages": [{"role": "user", "content": prompt}]
         }
 
         request = urllib.request.Request(
@@ -138,21 +88,8 @@ Changelog:"""
             return result["choices"][0]["message"]["content"].strip()
 
 
-def get_changelog_generator(
-    generator_type: str = "simple",
-    config: Optional[Dict[str, Any]] = None
-) -> ChangelogGenerator:
-    """
-    Factory function to create a changelog generator.
-
-    Args:
-        generator_type: "simple" or "llm"
-        config: Configuration dict for the generator
-            For 'llm': api_key (required), model, prompt_template
-
-    Returns:
-        ChangelogGenerator instance
-    """
+def get_changelog_generator(generator_type: str = "simple", config: Optional[Dict[str, Any]] = None) -> ChangelogGenerator:
+    """Factory function to create a changelog generator"""
     config = config or {}
 
     if generator_type == "simple":
