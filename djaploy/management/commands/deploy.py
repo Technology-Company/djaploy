@@ -54,6 +54,24 @@ class Command(BaseCommand):
             default=None,
             help="Directory containing inventory files (overrides settings)",
         )
+
+        # Version bump options (mutually exclusive)
+        bump_group = parser.add_mutually_exclusive_group()
+        bump_group.add_argument(
+            "--bump-major",
+            action="store_true",
+            help="Bump major version (e.g., v1.0.0 -> v2.0.0)",
+        )
+        bump_group.add_argument(
+            "--bump-minor",
+            action="store_true",
+            help="Bump minor version (e.g., v1.0.0 -> v1.1.0)",
+        )
+        bump_group.add_argument(
+            "--bump-patch",
+            action="store_true",
+            help="Bump patch version (e.g., v1.0.0 -> v1.0.1) - this is the default",
+        )
     
     def handle(self, *args, **options):
         env = options["env"]
@@ -82,17 +100,29 @@ class Command(BaseCommand):
             mode = "latest"
             release_tag = None
         
+        # Determine version bump override
+        version_bump = None
+        if options["bump_major"]:
+            version_bump = "major"
+        elif options["bump_minor"]:
+            version_bump = "minor"
+        elif options["bump_patch"]:
+            version_bump = "patch"
+
         self.stdout.write(f"Deploying to {env} using mode: {mode}")
         if release_tag:
             self.stdout.write(f"Release tag: {release_tag}")
-        
+        if version_bump:
+            self.stdout.write(f"Version bump: {version_bump}")
+
         # Run deployment
         try:
             djaploy_deploy(
-                config, 
+                config,
                 inventory_file,
                 mode=mode,
-                release_tag=release_tag
+                release_tag=release_tag,
+                version_bump=version_bump,
             )
             self.stdout.write(
                 self.style.SUCCESS(f"Successfully deployed to {env}")

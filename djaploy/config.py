@@ -210,6 +210,9 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     # Additional host-specific data
     data: Optional[Dict[str, Any]] = None
 
+    # Environment identifier (e.g., 'production', 'staging', 'dev')
+    env: Optional[str] = None
+
     def __new__(cls, name: str, **kwargs):
         dict_typing = cls._dict_annotations
         dict_defaults = cls._dict_defaults.copy()

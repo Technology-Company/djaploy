@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -56,6 +57,7 @@ def deploy_project(config: DjaployConfig,
                   mode: str = "latest",
                   release_tag: Optional[str] = None,
                   skip_prepare: bool = False,
+                  version_bump: Optional[str] = None,
                   **kwargs):
     """
     Deploy project to servers
@@ -66,11 +68,18 @@ def deploy_project(config: DjaployConfig,
         mode: Deployment mode ("local", "latest", "release")
         release_tag: Release tag if mode is "release"
         skip_prepare: Skip running prepare.py script (useful for non-deployment operations)
+        version_bump: Override version increment type ("major", "minor", "patch")
         **kwargs: Additional arguments
     """
 
     # Validate configuration
     config.validate()
+
+    # Apply version bump override if specified
+    if version_bump:
+        if "versioning" not in config.module_configs:
+            config.module_configs["versioning"] = {}
+        config.module_configs["versioning"]["increment_type"] = version_bump
 
     # Run prepare script if it exists (BEFORE artifact creation)
     if not skip_prepare:
@@ -90,23 +99,114 @@ def deploy_project(config: DjaployConfig,
 
     # Pre-process inventory file to convert HostConfig objects to tuples
     processed_inventory_file = _preprocess_inventory(inventory_file)
-    
+
     # Create pyinfra deployment script
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
         f.write(_generate_deploy_script(config, modules, artifact_path))
         script_path = f.name
-    
+
+    # Extract environment from inventory filename
+    env_name = Path(inventory_file).stem
+
+    # Set up failure notification context (for sending from main process if pyinfra fails)
+    failure_notifier = _setup_failure_notification(config, env_name, version_bump)
+
     try:
-        # Extract environment from inventory filename
-        env_name = Path(inventory_file).stem
-        
         # Run pyinfra with environment data
         _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
+    except subprocess.CalledProcessError as e:
+        # Send failure notification if configured
+        if failure_notifier:
+            failure_notifier(f"Deployment failed with exit code {e.returncode}")
+        raise
+    except Exception as e:
+        # Send failure notification for any other exception
+        if failure_notifier:
+            failure_notifier(str(e))
+        raise
     finally:
         # Clean up
         os.unlink(script_path)
         if processed_inventory_file != inventory_file:
             os.unlink(processed_inventory_file)
+
+
+def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
+    """
+    Set up failure notification capability for the deployment.
+
+    Returns a callable that can send failure notifications, or None if
+    notifications are not configured.
+    """
+    # Check if notifications module is enabled
+    if "djaploy.modules.notifications" not in config.modules:
+        return None
+
+    notifications_config = config.module_configs.get("notifications", {})
+    if not notifications_config:
+        return None
+
+    # Check if failure notifications are enabled
+    if not notifications_config.get("notify_on_failure", True):
+        return None
+
+    # Check if this environment should be notified
+    notify_environments = notifications_config.get("notify_environments")
+    if notify_environments and env_name not in notify_environments:
+        return None
+
+    # Set up the notification backend
+    try:
+        from .notifications import get_notification_backend
+        from .versioning import get_latest_version_tag, get_current_commit_hash, increment_version
+        from .changelog import get_changelog_generator
+
+        backend_type = notifications_config.get("backend", "slack")
+        backend_config = notifications_config.get("backend_config", {})
+        backend = get_notification_backend(backend_type, backend_config)
+
+        if not backend:
+            return None
+
+        # Pre-compute version info
+        git_dir = config.git_dir
+        current_version = get_latest_version_tag(git_dir)
+        # Use override if provided, otherwise use config default
+        increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
+        new_version = increment_version(current_version, increment_type)
+        commit = get_current_commit_hash(git_dir, short=False)
+
+        def send_failure(error_message: str = "") -> bool:
+            """Send failure notification"""
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            context = {
+                "env": env_name,
+                "version": new_version,
+                "commit": commit or "unknown",
+                "changelog": "",
+                "success": False,
+                "timestamp": timestamp,
+                "project_name": config.project_name,
+                "host_name": "",
+                "error_message": error_message,
+            }
+            message = f"Deployment failed for {config.project_name} to {env_name}"
+            if error_message:
+                message += f": {error_message}"
+
+            try:
+                return backend.send(message, context)
+            except Exception as e:
+                print(f"[NOTIFICATIONS] Warning: Failed to send failure notification: {e}")
+                return False
+
+        return send_failure
+
+    except ImportError:
+        return None
+    except Exception as e:
+        print(f"[NOTIFICATIONS] Warning: Failed to set up failure notifications: {e}")
+        return None
 
 
 def _generate_configure_script(config: DjaployConfig, modules: List) -> str:
