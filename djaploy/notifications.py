@@ -79,13 +79,13 @@ class SlackNotificationBackend(NotificationBackend):
         commit = context.get("commit", "unknown")[:7] if context.get("commit") else "unknown"
         changelog = context.get("changelog", "")
         error_message = context.get("error_message", "")
-        host_name = context.get("host_name", "unknown")
+        display_name = context.get("display_name", "unknown")
         timestamp = context.get("timestamp", "")
 
         if success:
-            header_text = f"Deployment Successful: {host_name} {version}"
+            header_text = f"Deployment Successful: {display_name} {version}"
         else:
-            header_text = f"Deployment Failed: {host_name} {version}"
+            header_text = f"Deployment Failed: {display_name} {version}"
 
         blocks: List[Dict[str, Any]] = [
             {

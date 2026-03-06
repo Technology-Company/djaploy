@@ -85,15 +85,16 @@ class NotificationsModule(BaseModule):
     Sends deployment notifications via configurable backend.
 
     Configuration (in module_configs['notifications']):
+        display_name: Name shown in notification header (required)
         backend: 'slack' or 'webhook' (default: 'slack')
         backend_config:
             webhook_url: Webhook URL (required)
             channel: Optional channel override (Slack only)
         changelog_generator: 'simple' or 'llm' (default: 'simple')
-         changelog_config:
-              api_key: LLM API key (required for 'llm')
-              api_url: API endpoint (default: Mistral)
-              model: Model to use (default: devstral-small-latest)
+        changelog_config:
+            api_key: LLM API key (required for 'llm')
+            api_url: API endpoint (default: Mistral)
+            model: Model to use (default: devstral-small-latest)
         notify_environments: List of environments to notify (default: all)
         notify_on_failure: Whether to send notifications on failure (default: True)
     """
@@ -149,7 +150,7 @@ class NotificationsModule(BaseModule):
             "commit": version_info.get("commit", "unknown"),
             "changelog": changelog,
             "project_name": project_config.project_name,
-            "host_name": host_data.get("name", "unknown"),
+            "display_name": self.config.get("display_name", project_config.project_name),
             "notify_environments": self.config.get("notify_environments"),
         }
 
