@@ -116,12 +116,7 @@ def deploy_project(config: DjaployConfig,
         _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
 
         # Send success notification after pyinfra operations complete
-        if "djaploy.modules.notifications" in config.modules:
-            try:
-                from .modules.notifications import send_success_notification
-                send_success_notification()
-            except Exception as e:
-                print(f"[NOTIFICATIONS] Warning: Failed to send success notification: {e}")
+        _send_success_notification(config, env_name, version_bump)
 
     except subprocess.CalledProcessError as e:
         # Send failure notification if configured
@@ -196,7 +191,7 @@ def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bu
                 "success": False,
                 "timestamp": timestamp,
                 "project_name": config.project_name,
-                "host_name": "",
+                "display_name": notifications_config.get("display_name", config.project_name),
                 "error_message": error_message,
             }
             message = f"Deployment failed for {config.project_name} to {env_name}"
@@ -216,6 +211,79 @@ def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bu
     except Exception as e:
         print(f"[NOTIFICATIONS] Warning: Failed to set up failure notifications: {e}")
         return None
+
+
+def _send_success_notification(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
+    """Send success notification after deployment completes."""
+    if "djaploy.modules.notifications" not in config.modules:
+        return
+
+    notifications_config = config.module_configs.get("notifications", {})
+    if not notifications_config:
+        return
+
+    # Check if this environment should be notified
+    notify_environments = notifications_config.get("notify_environments")
+    if notify_environments and env_name not in notify_environments:
+        print(f"[NOTIFICATIONS] Skipping notification for environment: {env_name}")
+        return
+
+    try:
+        from .notifications import get_notification_backend
+        from .versioning import get_latest_version_tag, get_current_commit_hash, increment_version, get_commits_since_tag
+        from .changelog import get_changelog_generator
+
+        # Set up backend
+        backend_type = notifications_config.get("backend", "slack")
+        backend_config = notifications_config.get("backend_config", {})
+        backend = get_notification_backend(backend_type, backend_config)
+
+        if not backend:
+            return
+
+        # Get version info
+        git_dir = config.git_dir
+        current_version = get_latest_version_tag(git_dir)
+        increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
+        new_version = increment_version(current_version, increment_type)
+        commit = get_current_commit_hash(git_dir, short=False)
+
+        # Generate changelog
+        generator_type = notifications_config.get("changelog_generator", "simple")
+        generator_config = notifications_config.get("changelog_config", {})
+        changelog_generator = get_changelog_generator(generator_type, generator_config)
+
+        commits = get_commits_since_tag(git_dir, current_version)
+        changelog = ""
+        if commits and changelog_generator:
+            try:
+                changelog = changelog_generator.generate(commits)
+            except Exception as e:
+                print(f"[NOTIFICATIONS] Warning: Failed to generate changelog: {e}")
+                changelog = commits
+
+        # Build context
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        context = {
+            "env": env_name,
+            "version": new_version,
+            "commit": commit or "unknown",
+            "changelog": changelog,
+            "success": True,
+            "timestamp": timestamp,
+            "project_name": config.project_name,
+            "display_name": notifications_config.get("display_name", config.project_name),
+        }
+
+        message = f"Deployment succeeded: {config.project_name} {new_version} to {env_name}"
+
+        if backend.send(message, context):
+            print(f"[NOTIFICATIONS] Sent success notification for {env_name}")
+        else:
+            print(f"[NOTIFICATIONS] Warning: Failed to send notification")
+
+    except Exception as e:
+        print(f"[NOTIFICATIONS] Warning: Failed to send success notification: {e}")
 
 
 def _generate_configure_script(config: DjaployConfig, modules: List) -> str:
