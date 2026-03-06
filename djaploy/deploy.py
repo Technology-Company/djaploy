@@ -146,7 +146,11 @@ def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bu
     if "djaploy.modules.notifications" not in config.modules:
         return None
 
-    notifications_config = config.module_configs.get("notifications", {})
+    notifications_config = (
+        config.module_configs.get("notifications")
+        or config.module_configs.get("djaploy.modules.notifications")
+        or {}
+    )
     if not notifications_config:
         return None
 
@@ -218,7 +222,11 @@ def _send_success_notification(config: DjaployConfig, env_name: str, version_bum
     if "djaploy.modules.notifications" not in config.modules:
         return
 
-    notifications_config = config.module_configs.get("notifications", {})
+    notifications_config = (
+        config.module_configs.get("notifications")
+        or config.module_configs.get("djaploy.modules.notifications")
+        or {}
+    )
     if not notifications_config:
         return
 
