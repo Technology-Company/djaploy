@@ -6,9 +6,37 @@ import json
 import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
 from .certificates import OpSecret
+
+
+def format_human_timestamp(iso_timestamp: str) -> str:
+    """Format ISO timestamp to human-readable format (Today at 8:07 PM, Yesterday, Feb 27th)"""
+    from datetime import timedelta
+
+    try:
+        dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+
+        dt_local = dt.astimezone()
+        now_local = now.astimezone()
+
+        time_str = dt_local.strftime("%-I:%M %p").replace("AM", "am").replace("PM", "pm")
+        yesterday = (now_local - timedelta(days=1)).date()
+
+        if dt_local.date() == now_local.date():
+            return f"Today at {time_str}"
+        elif dt_local.date() == yesterday:
+            return f"Yesterday at {time_str}"
+        else:
+            day = dt_local.day
+            suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+            date_str = dt_local.strftime(f"%b {day}{suffix}")
+            return f"{date_str} at {time_str}"
+    except Exception:
+        return iso_timestamp
 
 
 class NotificationBackend(ABC):
@@ -50,20 +78,14 @@ class SlackNotificationBackend(NotificationBackend):
         version = context.get("version", "unknown")
         commit = context.get("commit", "unknown")[:7] if context.get("commit") else "unknown"
         changelog = context.get("changelog", "")
-        project_name = context.get("project_name", "unknown")
-        host_name = context.get("host_name", "")
+        error_message = context.get("error_message", "")
+        host_name = context.get("host_name", "unknown")
         timestamp = context.get("timestamp", "")
 
         if success:
-            status_emoji = ":white_check_mark:"
-            status_text = "Deployment Succeeded"
+            header_text = f"Deployment Successful: {host_name} {version}"
         else:
-            status_emoji = ":x:"
-            status_text = "Deployment Failed"
-
-        header_text = f"{status_emoji} {status_text}"
-        if project_name:
-            header_text = f"{status_emoji} {project_name}: {status_text}"
+            header_text = f"Deployment Failed: {host_name} {version}"
 
         blocks: List[Dict[str, Any]] = [
             {
@@ -72,32 +94,32 @@ class SlackNotificationBackend(NotificationBackend):
             },
             {
                 "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Environment:*\n{env}"},
-                    {"type": "mrkdwn", "text": f"*Version:*\n{version}"},
-                    {"type": "mrkdwn", "text": f"*Commit:*\n`{commit}`"},
-                ]
+                "text": {"type": "mrkdwn", "text": f"*Environment:* {env}\n*Commit:* `{commit}`"}
             }
         ]
 
-        if host_name:
-            blocks[1]["fields"].append({"type": "mrkdwn", "text": f"*Host:*\n{host_name}"})
+        # Changes (success) or Error (failure) in code block
+        if success and changelog:
+            max_len = 2900
+            if len(changelog) > max_len:
+                changelog = changelog[:max_len] + "..."
 
-        if changelog and success:
-            max_changelog_len = 2900
-            if len(changelog) > max_changelog_len:
-                changelog = changelog[:max_changelog_len] + "\n..."
-
-            blocks.append({"type": "divider"})
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Changes:*\n{changelog}"}
+                "text": {"type": "mrkdwn", "text": f"*Changes:*\n```{changelog}```"}
+            })
+        elif not success and error_message:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Error:*\n```{error_message}```"}
             })
 
+        # Timestamp in human-readable format
         if timestamp:
+            human_timestamp = format_human_timestamp(timestamp)
             blocks.append({
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Deployed at {timestamp}"}]
+                "elements": [{"type": "mrkdwn", "text": human_timestamp}]
             })
 
         payload: Dict[str, Any] = {"blocks": blocks, "text": message}
