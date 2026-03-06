@@ -31,17 +31,7 @@ def get_configured_backend() -> Optional[NotificationBackend]:
 
 
 def send_failure_notification(error_message: str = "") -> bool:
-    """
-    Send a failure notification for the current deployment.
-
-    This can be called from the deployment error handler.
-
-    Args:
-        error_message: Optional error message to include
-
-    Returns:
-        True if notification was sent successfully
-    """
+    """Send a failure notification for the current deployment."""
     if not _notification_backend:
         return False
 
@@ -58,6 +48,36 @@ def send_failure_notification(error_message: str = "") -> bool:
         message += f": {error_message}"
 
     return _notification_backend.send(message, context)
+
+
+def send_success_notification() -> bool:
+    """Send a success notification for the current deployment."""
+    if not _notification_backend:
+        return False
+
+    context = _notification_context.copy()
+    if not context:
+        return False
+
+    env = context.get("env", "unknown")
+    notify_environments = context.get("notify_environments")
+
+    if notify_environments and env not in notify_environments:
+        print(f"[NOTIFICATIONS] Skipping notification for environment: {env}")
+        return False
+
+    context["success"] = True
+    context["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    message = f"Deployment succeeded: {context.get('project_name', 'unknown')} {context.get('version', '')} to {env}"
+
+    success = _notification_backend.send(message, context)
+    if success:
+        print(f"[NOTIFICATIONS] Sent success notification for {env}")
+    else:
+        print(f"[NOTIFICATIONS] Warning: Failed to send notification")
+
+    return success
 
 
 class NotificationsModule(BaseModule):
@@ -93,7 +113,7 @@ class NotificationsModule(BaseModule):
         pass
 
     def pre_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Initialize backend and store context for potential failure notification"""
+        """Initialize backend, generate changelog, and store context for notifications"""
         global _notification_backend, _notification_context, _changelog_generator
 
         # Initialize notification backend
@@ -108,41 +128,11 @@ class NotificationsModule(BaseModule):
         self._changelog_generator = get_changelog_generator(generator_type, generator_config)
         _changelog_generator = self._changelog_generator
 
-        # Store context for failure notifications
+        # Get version info
         version_info = get_deployment_version_info()
         env = host_data.get("env", "unknown")
 
-        _notification_context = {
-            "env": env,
-            "version": version_info.get("new_version", "unknown"),
-            "commit": version_info.get("commit", "unknown"),
-            "project_name": project_config.project_name,
-            "host_name": host_data.get("name", "unknown"),
-            "commits_since_tag": version_info.get("commits_since_tag", ""),
-        }
-
-    def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Nothing to deploy"""
-        pass
-
-    def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Generate changelog and send success notification"""
-        env = host_data.get("env")
-        notify_environments = self.config.get("notify_environments")
-
-        # Check if this environment should be notified
-        if notify_environments and env not in notify_environments:
-            print(f"[NOTIFICATIONS] Skipping notification for environment: {env}")
-            return
-
-        if not self._backend:
-            print("[NOTIFICATIONS] Warning: No notification backend configured")
-            return
-
-        # Get version info from versioning module
-        version_info = get_deployment_version_info()
-
-        # Generate changelog
+        # Generate changelog now (before deployment operations run)
         commits = version_info.get("commits_since_tag", "")
         changelog = ""
         if commits and self._changelog_generator:
@@ -150,36 +140,33 @@ class NotificationsModule(BaseModule):
                 changelog = self._changelog_generator.generate(commits)
             except Exception as e:
                 print(f"[NOTIFICATIONS] Warning: Failed to generate changelog: {e}")
-                changelog = commits  # Fallback to raw commits
+                changelog = commits
 
-        # Build notification context
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        context = {
+        # Store full context for both success and failure notifications
+        _notification_context = {
             "env": env,
             "version": version_info.get("new_version", "unknown"),
             "commit": version_info.get("commit", "unknown"),
             "changelog": changelog,
-            "success": True,
-            "timestamp": timestamp,
             "project_name": project_config.project_name,
             "host_name": host_data.get("name", "unknown"),
+            "notify_environments": self.config.get("notify_environments"),
         }
 
-        # Build message
-        message = f"Deployment succeeded: {project_config.project_name} {version_info.get('new_version', '')} to {env}"
+    def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
+        """Nothing to deploy"""
+        pass
 
-        # Send notification
-        success = self._backend.send(message, context)
-        if success:
-            print(f"[NOTIFICATIONS] Sent success notification for {env}")
-        else:
-            print(f"[NOTIFICATIONS] Warning: Failed to send notification")
+    def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
+        """Nothing to do here - notification sent after pyinfra operations complete"""
+        pass
 
 
 # Make the module class available for the loader
 Module = NotificationsModule
 __all__ = [
     "NotificationsModule",
+    "send_success_notification",
     "send_failure_notification",
     "get_notification_context",
     "get_configured_backend",

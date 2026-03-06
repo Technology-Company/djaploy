@@ -114,6 +114,15 @@ def deploy_project(config: DjaployConfig,
     try:
         # Run pyinfra with environment data
         _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
+
+        # Send success notification after pyinfra operations complete
+        if "djaploy.modules.notifications" in config.modules:
+            try:
+                from .modules.notifications import send_success_notification
+                send_success_notification()
+            except Exception as e:
+                print(f"[NOTIFICATIONS] Warning: Failed to send success notification: {e}")
+
     except subprocess.CalledProcessError as e:
         # Send failure notification if configured
         if failure_notifier:
