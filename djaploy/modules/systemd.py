@@ -25,26 +25,44 @@ class SystemdModule(BaseModule):
     
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Deploy systemd service configurations"""
-        
+
         # Systemd files are provided by the project in deploy_files
         # No need to generate them here
-        
+
         # Reload systemd daemon to pick up any new service files
         systemd.daemon_reload(
             name="Reload systemd daemon",
             _sudo=True,
         )
-        
+
+        zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
+
         # Start and enable services
         for service in getattr(host_data, "services", []):
-            systemd.service(
-                name=f"Start and enable {service}",
-                service=service,
-                running=True,
-                enabled=True,
-                restarted=True,  # Restart on deploy
-                _sudo=True,
-            )
+            if zero_downtime:
+                # Use reload (sends USR2) for zero-downtime deployment
+                systemd.service(
+                    name=f"Start and enable {service}",
+                    service=service,
+                    running=True,
+                    enabled=True,
+                    _sudo=True,
+                )
+                systemd.service(
+                    name=f"Reload {service} (USR2)",
+                    service=service,
+                    reloaded=True,
+                    _sudo=True,
+                )
+            else:
+                systemd.service(
+                    name=f"Start and enable {service}",
+                    service=service,
+                    running=True,
+                    enabled=True,
+                    restarted=True,  # Restart on deploy
+                    _sudo=True,
+                )
         
         # Start and enable timer services
         for timer in getattr(host_data, "timer_services", []):
@@ -56,6 +74,16 @@ class SystemdModule(BaseModule):
                 _sudo=True,
             )
     
+    def rollback(self, host_data: Dict[str, Any], project_config: Any, release: str = None):
+        """Reload services after a rollback (sends USR2)"""
+        for service in getattr(host_data, "services", []):
+            systemd.service(
+                name=f"Reload {service} after rollback",
+                service=service,
+                reloaded=True,
+                _sudo=True,
+            )
+
     def get_services(self) -> List[str]:
         """Get services managed by this module"""
         # Return empty as services are project-specific

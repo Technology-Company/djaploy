@@ -1,6 +1,6 @@
 [project]
 name = "djaploy"
-version = "0.6.8"
+version = "0.7.0"
 description = "Modular Django deployment system based on pyinfra"
 authors = [
     {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
@@ -44,10 +44,10 @@ bunny = ["certbot-dns-bunny<=0.0.9"]
 [project.scripts]
 djaploy-django-pyinfra = "djaploy.bin.django_pyinfra:main"
 [project.urls]
-Homepage = "https://github.com/techco-fi/djaploy"
-Repository = "https://github.com/techco-fi/djaploy"
-Issues = "https://github.com/techco-fi/djaploy/issues"
-Documentation = "https://github.com/techco-fi/djaploy#readme"
+Homepage = "https://github.com/Technology-Company/djaploy"
+Repository = "https://github.com/Technology-Company/djaploy"
+Issues = "https://github.com/Technology-Company/djaploy/issues"
+Documentation = "https://github.com/Technology-Company/djaploy#readme"
 
 [tool.setuptools]
 include-package-data = true
