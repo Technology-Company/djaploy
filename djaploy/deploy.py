@@ -179,10 +179,16 @@ def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bu
         # Pre-compute version info
         git_dir = config.git_dir
         current_version = get_latest_version_tag(git_dir)
-        # Use override if provided, otherwise use config default
-        increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
-        new_version = increment_version(current_version, increment_type)
         commit = get_current_commit_hash(git_dir, short=False)
+
+        # Only increment version if there are new commits
+        from .versioning import get_commits_since_tag
+        commits = get_commits_since_tag(git_dir, current_version)
+        if commits:
+            increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
+            new_version = increment_version(current_version, increment_type)
+        else:
+            new_version = current_version or "v1.0.0"
 
         def send_failure(error_message: str = "") -> bool:
             """Send failure notification"""
@@ -252,16 +258,20 @@ def _send_success_notification(config: DjaployConfig, env_name: str, version_bum
         # Get version info
         git_dir = config.git_dir
         current_version = get_latest_version_tag(git_dir)
-        increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
-        new_version = increment_version(current_version, increment_type)
         commit = get_current_commit_hash(git_dir, short=False)
+        commits = get_commits_since_tag(git_dir, current_version)
+
+        # Only increment version if there are new commits
+        if commits:
+            increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
+            new_version = increment_version(current_version, increment_type)
+        else:
+            new_version = current_version or "v1.0.0"
 
         # Generate changelog
         generator_type = notifications_config.get("changelog_generator", "simple")
         generator_config = notifications_config.get("changelog_config", {})
         changelog_generator = get_changelog_generator(generator_type, generator_config)
-
-        commits = get_commits_since_tag(git_dir, current_version)
         changelog = ""
         if commits and changelog_generator:
             try:

@@ -69,15 +69,19 @@ class VersioningModule(BaseModule):
         # Get current version tag
         self._current_version = get_latest_version_tag(git_dir)
 
-        # Calculate new version
-        increment_type = self.config.get("increment_type", "patch")
-        self._new_version = increment_version(self._current_version, increment_type)
-
         # Get commit hash
         self._commit_hash = get_current_commit_hash(git_dir, short=False)
 
         # Get commits since last tag
         self._commits_since_tag = get_commits_since_tag(git_dir, self._current_version)
+
+        # Only increment version if there are new commits since last tag
+        if self._commits_since_tag:
+            increment_type = self.config.get("increment_type", "patch")
+            self._new_version = increment_version(self._current_version, increment_type)
+        else:
+            # No new commits - use current version
+            self._new_version = self._current_version or "v1.0.0"
 
         # Store in module-level storage for notifications module
         env = host_data.get("env", "unknown")
@@ -140,6 +144,11 @@ ENVIRONMENT={env}
         # Check if this environment should be tagged
         if env not in tag_environments:
             print(f"[VERSIONING] Skipping tag creation for environment: {env}")
+            return
+
+        # Skip if no new commits since last tag (tag already exists)
+        if not self._commits_since_tag:
+            print(f"[VERSIONING] No new commits, using existing tag: {self._new_version}")
             return
 
         # Check if we already created this tag (avoid duplicate tags for multi-host deploys)
