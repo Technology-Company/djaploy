@@ -12,29 +12,15 @@ from typing import Dict, Any, Optional, List
 from .certificates import OpSecret
 
 
-def format_human_timestamp(iso_timestamp: str) -> str:
-    """Format ISO timestamp to human-readable format (Today at 8:07 PM, Yesterday, Feb 27th)"""
-    from datetime import timedelta
-
+def format_slack_timestamp(iso_timestamp: str) -> str:
+    """Format timestamp using Slack's date formatting (auto-converts to user's timezone)"""
     try:
         dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-
-        dt_local = dt.astimezone()
-        now_local = now.astimezone()
-
-        time_str = dt_local.strftime("%-I:%M %p").replace("AM", "am").replace("PM", "pm")
-        yesterday = (now_local - timedelta(days=1)).date()
-
-        if dt_local.date() == now_local.date():
-            return f"Today at {time_str}"
-        elif dt_local.date() == yesterday:
-            return f"Yesterday at {time_str}"
-        else:
-            day = dt_local.day
-            suffix = "th" if 11 <= day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-            date_str = dt_local.strftime(f"%b {day}{suffix}")
-            return f"{date_str} at {time_str}"
+        unix_ts = int(dt.timestamp())
+        # Slack's date format: <!date^UNIX_TS^{format}|fallback>
+        # {date_short_pretty} = "Today", "Yesterday", or "Jan 1, 2020"
+        # {time} = "6:39 PM"
+        return f"<!date^{unix_ts}^{{date_short_pretty}} at {{time}}|{iso_timestamp}>"
     except Exception:
         return iso_timestamp
 
@@ -114,12 +100,12 @@ class SlackNotificationBackend(NotificationBackend):
                 "text": {"type": "mrkdwn", "text": f"*Error:*\n```{error_message}```"}
             })
 
-        # Timestamp in human-readable format
+        # Timestamp using Slack's date formatting (auto-converts to user's timezone)
         if timestamp:
-            human_timestamp = format_human_timestamp(timestamp)
+            slack_timestamp = format_slack_timestamp(timestamp)
             blocks.append({
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": human_timestamp}]
+                "elements": [{"type": "mrkdwn", "text": slack_timestamp}]
             })
 
         payload: Dict[str, Any] = {"blocks": blocks, "text": message}
