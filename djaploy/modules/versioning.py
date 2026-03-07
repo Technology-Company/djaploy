@@ -13,7 +13,6 @@ from .base import BaseModule
 from ..versioning import (
     get_latest_version_tag,
     increment_version,
-    create_git_tag,
     get_current_commit_hash,
     get_commits_since_tag,
 )
@@ -37,7 +36,10 @@ def set_deployment_version_info(info: Dict[str, Any]) -> None:
 
 class VersioningModule(BaseModule):
     """
-    Deploys VERSION file and creates git tags.
+    Calculates version info and deploys VERSION file.
+
+    Note: Git tags are created in the main process after successful deployment,
+    not in this module. This ensures tags only exist for successful deployments.
 
     Configuration (in module_configs['versioning']):
         tag_environments: List of environments to create tags for (default: ['production'])
@@ -56,7 +58,6 @@ class VersioningModule(BaseModule):
         self._new_version: Optional[str] = None
         self._commit_hash: Optional[str] = None
         self._commits_since_tag: str = ""
-        self._tag_created: bool = False
 
     def configure_server(self, host_data: Dict[str, Any], project_config: Any):
         """Nothing to configure on server"""
@@ -136,47 +137,8 @@ ENVIRONMENT={env}
         print(f"[VERSIONING] Deployed VERSION file to {dest_path}")
 
     def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Create and push git tag (for configured environments only)"""
-        env = host_data.get("env")
-        tag_environments = self.config.get("tag_environments", ["production"])
-        push_tags = self.config.get("push_tags", True)
-
-        # Check if this environment should be tagged
-        if env not in tag_environments:
-            print(f"[VERSIONING] Skipping tag creation for environment: {env}")
-            return
-
-        # Skip if no new commits since last tag (tag already exists)
-        if not self._commits_since_tag:
-            print(f"[VERSIONING] No new commits, using existing tag: {self._new_version}")
-            return
-
-        # Check if we already created this tag (avoid duplicate tags for multi-host deploys)
-        if self._tag_created:
-            print(f"[VERSIONING] Tag {self._new_version} already created, skipping")
-            return
-
-        git_dir = project_config.git_dir
-
-        # Create tag message with changelog
-        if self._commits_since_tag:
-            tag_message = f"Release {self._new_version}\n\nChanges since {self._current_version or 'initial'}:\n{self._commits_since_tag}"
-        else:
-            tag_message = f"Release {self._new_version}"
-
-        # Create and push tag
-        success = create_git_tag(
-            git_dir=git_dir,
-            tag=self._new_version,
-            message=tag_message,
-            push=push_tags,
-        )
-
-        if success:
-            self._tag_created = True
-            print(f"[VERSIONING] Created and pushed tag: {self._new_version}")
-        else:
-            print(f"[VERSIONING] Warning: Failed to create tag {self._new_version}")
+        """Nothing to do - tag creation happens in main process after successful deployment"""
+        pass
 
 
 # Make the module class available for the loader

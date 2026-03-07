@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 
-def get_latest_version_tag(git_dir: Path) -> Optional[str]:
-    """Find the latest semantic version tag (v*.*.*)"""
+def get_version_tags(git_dir: Path, limit: int = 10) -> list:
+    """Get list of semantic version tags sorted by version (newest first)"""
     try:
         result = subprocess.run(
             ["git", "tag", "-l", "v*.*.*", "--sort=-v:refname"],
@@ -22,15 +22,30 @@ def get_latest_version_tag(git_dir: Path) -> Optional[str]:
         tags = result.stdout.strip().split('\n')
         semver_pattern = re.compile(r'^v\d+\.\d+\.\d+$')
 
+        version_tags = []
         for tag in tags:
             tag = tag.strip()
             if tag and semver_pattern.match(tag):
-                return tag
+                version_tags.append(tag)
+                if len(version_tags) >= limit:
+                    break
 
-        return None
+        return version_tags
 
     except subprocess.CalledProcessError:
-        return None
+        return []
+
+
+def get_latest_version_tag(git_dir: Path) -> Optional[str]:
+    """Find the latest semantic version tag (v*.*.*)"""
+    tags = get_version_tags(git_dir, limit=1)
+    return tags[0] if tags else None
+
+
+def get_previous_version_tag(git_dir: Path) -> Optional[str]:
+    """Find the second-latest semantic version tag"""
+    tags = get_version_tags(git_dir, limit=2)
+    return tags[1] if len(tags) >= 2 else None
 
 
 def parse_version(version: str) -> tuple:

@@ -115,8 +115,11 @@ def deploy_project(config: DjaployConfig,
         # Run pyinfra with environment data
         _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
 
-        # Send success notification after pyinfra operations complete
+        # Send success notification (before tag is created, so changelog works)
         _send_success_notification(config, env_name, version_bump)
+
+        # Create version tag after successful deployment
+        _create_version_tag(config, env_name, version_bump)
 
     except subprocess.CalledProcessError as e:
         # Send failure notification if configured
@@ -255,13 +258,13 @@ def _send_success_notification(config: DjaployConfig, env_name: str, version_bum
         if not backend:
             return
 
-        # Get version info
+        # Get version info (tag not created yet, so commits since current tag is accurate)
         git_dir = config.git_dir
         current_version = get_latest_version_tag(git_dir)
         commit = get_current_commit_hash(git_dir, short=False)
         commits = get_commits_since_tag(git_dir, current_version)
 
-        # Only increment version if there are new commits
+        # Calculate new version
         if commits:
             increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
             new_version = increment_version(current_version, increment_type)
@@ -302,6 +305,59 @@ def _send_success_notification(config: DjaployConfig, env_name: str, version_bum
 
     except Exception as e:
         print(f"[NOTIFICATIONS] Warning: Failed to send success notification: {e}")
+
+
+def _create_version_tag(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
+    """Create version tag after successful deployment."""
+    if "djaploy.modules.versioning" not in config.modules:
+        return
+
+    versioning_config = (
+        config.module_configs.get("versioning")
+        or config.module_configs.get("djaploy.modules.versioning")
+        or {}
+    )
+
+    # Check if this environment should be tagged
+    tag_environments = versioning_config.get("tag_environments", ["production"])
+    if env_name not in tag_environments:
+        print(f"[VERSIONING] Skipping tag creation for environment: {env_name}")
+        return
+
+    try:
+        from .versioning import (
+            get_latest_version_tag,
+            get_commits_since_tag,
+            increment_version,
+            create_git_tag,
+        )
+
+        git_dir = config.git_dir
+        current_version = get_latest_version_tag(git_dir)
+        commits = get_commits_since_tag(git_dir, current_version)
+
+        # Only create tag if there are new commits
+        if not commits:
+            print(f"[VERSIONING] No new commits since {current_version or 'initial'}, skipping tag")
+            return
+
+        # Calculate new version
+        increment_type = version_bump or versioning_config.get("increment_type", "patch")
+        new_version = increment_version(current_version, increment_type)
+
+        # Create tag
+        push_tags = versioning_config.get("push_tags", True)
+        tag_message = f"Release {new_version}\n\n{commits}"
+
+        if create_git_tag(git_dir, new_version, message=tag_message, push=push_tags):
+            print(f"[VERSIONING] Created tag {new_version}")
+            if push_tags:
+                print(f"[VERSIONING] Pushed tag to origin")
+        else:
+            print(f"[VERSIONING] Warning: Failed to create tag {new_version}")
+
+    except Exception as e:
+        print(f"[VERSIONING] Warning: Failed to create version tag: {e}")
 
 
 def _generate_configure_script(config: DjaployConfig, modules: List) -> str:
