@@ -163,6 +163,9 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
         - webhook_url: Slack webhook URL
         - push_tags: Whether to push tags
     """
+    if "djaploy.modules.versioning" not in config.modules:
+        return None
+
     versioning_config = _get_module_config(config, "versioning")
     notifications_config = _get_module_config(config, "notifications")
 
