@@ -226,3 +226,32 @@ def tag_exists(git_dir: Path, tag: str) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def get_tag_message(git_dir: Path, tag: str) -> Optional[str]:
+    """Get the message/description of an annotated git tag"""
+    try:
+        result = subprocess.run(
+            ["git", "tag", "-l", "--format=%(contents)", tag],
+            capture_output=True,
+            check=True,
+            text=True,
+            cwd=git_dir,
+        )
+        message = result.stdout.strip()
+        return message if message else None
+    except subprocess.CalledProcessError:
+        return None
+
+
+def extract_changelog_from_tag(tag_message: str) -> str:
+    """Extract the changelog summary from a tag message.
+
+    """
+    if not tag_message:
+        return ""
+
+    if "---" in tag_message:
+        return tag_message.split("---")[0].strip()
+
+    return tag_message.strip()

@@ -181,6 +181,8 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
             get_commits_since_tag,
             get_current_commit_hash,
             increment_version,
+            get_tag_message,
+            extract_changelog_from_tag,
         )
         from .changelog import get_changelog_generator
 
@@ -207,6 +209,12 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
             except Exception as e:
                 print(f"[RELEASE] Warning: Failed to generate changelog: {e}")
                 changelog = commits
+        elif current_version:
+            # No new commits - extract changelog from existing tag message
+            tag_message = get_tag_message(git_dir, current_version)
+            if tag_message:
+                changelog = extract_changelog_from_tag(tag_message)
+                print(f"[RELEASE] Using changelog from existing tag {current_version}")
 
         # Determine which environments to notify/tag
         tag_environments = versioning_config.get("tag_environments", ["production"])
