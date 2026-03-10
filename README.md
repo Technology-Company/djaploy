@@ -251,6 +251,137 @@ def prepare():
 
 Projects can include environment-specific configuration files in a `deploy_files/` directory that will be copied to the server during deployment. The directory structure mirrors the target filesystem layout (e.g. `deploy_files/production/etc/nginx/sites-available/myapp` gets copied to `/etc/nginx/sites-available/myapp` on the server).
 
+## Release Notifications & Versioning
+
+djaploy includes built-in support for semantic versioning, changelog generation, and deployment notifications. When enabled, deployments automatically:
+
+- Calculate the next semantic version based on git tags
+- Generate a changelog from commit messages (simple or AI-powered)
+- Send notifications to Slack or custom webhooks
+- Create and push git tags after successful deployments
+- Deploy a `VERSION` file to the server
+
+### Enabling the feature
+
+Add the `versioning` module to your config and configure notifications:
+
+```python
+# infra/config.py
+from djaploy.config import DjaployConfig
+
+config = DjaployConfig(
+    project_name="myapp",
+    # ...
+
+    modules=[
+        "djaploy.modules.core",
+        "djaploy.modules.nginx",
+        "djaploy.modules.systemd",
+        "djaploy.modules.versioning",  # Enable versioning
+    ],
+
+    module_configs={
+        "versioning": {
+            "tag_environments": ["production"],  # Create tags only for these envs
+            "increment_type": "patch",           # Default: patch (v1.0.0 -> v1.0.1)
+            "push_tags": True,                   # Push tags to remote
+        },
+        "notifications": {
+            "display_name": "My App",            # Name shown in notifications
+            "notify_environments": ["production", "staging"],
+            "notify_on_failure": True,
+            "changelog_generator": "llm",        # "simple" or "llm"
+            "changelog_config": {
+                "api_key": "op://vault/mistral/api-key",  # 1Password reference or plain key
+                "model": "devstral-small-latest",
+                "api_url": "https://api.mistral.ai/v1/chat/completions",
+            },
+            "backend_config": {
+                "webhook_url": "op://vault/slack/webhook-url",
+            },
+        },
+    },
+)
+```
+
+### Configuration options
+
+**Versioning (`module_configs["versioning"]`)**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `tag_environments` | `["production"]` | Environments that create git tags |
+| `increment_type` | `"patch"` | Default version bump: `major`, `minor`, or `patch` |
+| `push_tags` | `True` | Push created tags to remote |
+| `version_file_path` | `"VERSION"` | Path for VERSION file on server |
+
+**Notifications (`module_configs["notifications"]`)**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `display_name` | `project_name` | Name shown in notification messages |
+| `notify_environments` | `tag_environments` | Environments that send notifications |
+| `notify_on_failure` | `True` | Send notification on deployment failure |
+| `changelog_generator` | `"simple"` | Generator type: `simple` or `llm` |
+| `changelog_config` | `{}` | Config passed to changelog generator |
+| `backend_config.webhook_url` | — | Slack webhook URL (required) |
+
+### Changelog generators
+
+**Simple** — Concatenates commit messages into a brief summary:
+```python
+"changelog_generator": "simple"
+```
+
+**LLM** — Uses an AI model to generate natural language summaries:
+```python
+"changelog_generator": "llm",
+"changelog_config": {
+    "api_key": "your-api-key",           # Required
+    "api_url": "https://api.mistral.ai/v1/chat/completions",  # OpenAI-compatible
+    "model": "devstral-small-latest",
+}
+```
+
+### Version bump override
+
+Override the default increment type per deployment:
+
+```bash
+python manage.py deploy --env production --bump-major   # v1.0.0 -> v2.0.0
+python manage.py deploy --env production --bump-minor   # v1.0.0 -> v1.1.0
+python manage.py deploy --env production --bump-patch   # v1.0.0 -> v1.0.1 (default)
+```
+
+### How it works
+
+```
+Deploy to dev (tag_environments: ["production"])
+├─ Calculates version from commits since last tag
+├─ Generates changelog
+├─ Sends notification ✓
+└─ Does NOT create tag (dev not in tag_environments)
+
+Deploy to production
+├─ Same version/changelog calculation
+├─ Sends notification ✓
+├─ Creates tag v1.0.5 and pushes to remote ✓
+└─ Deploys VERSION file to server
+```
+
+When redeploying the same version (no new commits), the changelog is extracted from the existing git tag message to ensure consistent notifications across environments.
+
+### VERSION file
+
+The versioning module deploys a `VERSION` file to the server containing:
+
+```
+VERSION=v1.0.5
+COMMIT=abc1234
+DEPLOYED_AT=2024-01-15T10:30:00Z
+ENVIRONMENT=production
+```
+
 ## Development
 
 ```bash
