@@ -252,6 +252,11 @@ def extract_changelog_from_tag(tag_message: str) -> str:
         return ""
 
     if "---" in tag_message:
-        return tag_message.split("---")[0].strip()
+        content = tag_message.split("---")[0].strip()
+    else:
+        content = tag_message.strip()
 
-    return tag_message.strip()
+    lines = content.split("\n")
+    if len(lines) > 1:
+        return "\n".join(lines[1:]).strip()
+    return content
