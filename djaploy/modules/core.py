@@ -88,13 +88,15 @@ class CoreModule(BaseModule):
         db_dir = getattr(project_config, 'db_dir', None)
         if db_dir:
             resolved_db_dir = project_config.resolve_db_dir(app_user)
-            files.directory(
-                name=f"Create external database directory ({resolved_db_dir})",
-                path=resolved_db_dir,
-                user=app_user,
-                group=app_user,
-                _sudo=True,
-            )
+            parent_dir = str(Path(resolved_db_dir).parent)
+            for directory in [parent_dir, resolved_db_dir]:
+                files.directory(
+                    name=f"Create {directory}",
+                    path=directory,
+                    user=app_user,
+                    group=app_user,
+                    _sudo=True,
+                )
 
         # Set up zero-downtime directory structure if configured
         if self._is_zero_downtime(project_config):
@@ -104,6 +106,16 @@ class CoreModule(BaseModule):
         """Create the releases/, shared/, current directory structure"""
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
         app_path = self._get_app_path(host_data, project_config)
+
+        apps_dir = f"/home/{app_user}/apps"
+        for directory in [apps_dir, app_path]:
+            files.directory(
+                name=f"Create {directory}",
+                path=directory,
+                user=app_user,
+                group=app_user,
+                _sudo=True,
+            )
 
         for subdir in ["releases", "shared"]:
             files.directory(
