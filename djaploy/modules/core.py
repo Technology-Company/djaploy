@@ -3,6 +3,7 @@ Core deployment module for djaploy
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -333,6 +334,12 @@ class CoreModule(BaseModule):
         # Extract the ref part: "project.REF.tar.gz" -> "REF"
         parts = artifact_filename.rsplit('.tar.gz', 1)[0]  # remove .tar.gz
         ref = parts.split('.', 1)[1] if '.' in parts else parts  # remove project name prefix
+
+        # For "local" deploys (no git ref), append a timestamp so each deploy
+        # gets its own release directory and rollback history is preserved.
+        if ref == "local":
+            ref = f"local-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
         release_name = f"app-{ref}"
         release_path = f"{releases_path}/{release_name}"
 
