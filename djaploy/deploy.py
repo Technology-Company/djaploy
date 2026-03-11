@@ -75,12 +75,6 @@ def deploy_project(config: DjaployConfig,
     # Validate configuration
     config.validate()
 
-    # Apply version bump override if specified
-    if version_bump:
-        if "versioning" not in config.module_configs:
-            config.module_configs["versioning"] = {}
-        config.module_configs["versioning"]["increment_type"] = version_bump
-
     # Run prepare script if it exists (BEFORE artifact creation)
     if not skip_prepare:
         prepare_script = config.djaploy_dir / "prepare.py"
@@ -108,28 +102,33 @@ def deploy_project(config: DjaployConfig,
     # Extract environment from inventory filename
     env_name = Path(inventory_file).stem
 
-    # Set up failure notification context (for sending from main process if pyinfra fails)
-    failure_notifier = _setup_failure_notification(config, env_name, version_bump)
+    # Calculate release info once (for notifications and tagging)
+    release_info = _get_release_info(config, env_name, version_bump)
+
+    # Build pyinfra data (includes version info for VERSION file deployment)
+    pyinfra_data = {"env": env_name}
+    if release_info:
+        pyinfra_data["version"] = release_info["new_version"]
+        pyinfra_data["commit"] = release_info["commit"]
 
     try:
-        # Run pyinfra with environment data
-        _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
+        # Run pyinfra with environment and version data
+        _run_pyinfra(script_path, processed_inventory_file, data=pyinfra_data)
 
         # Send success notification (before tag is created, so changelog works)
-        _send_success_notification(config, env_name, version_bump)
+        _send_notification(config, env_name, release_info, success=True)
 
         # Create version tag after successful deployment
-        _create_version_tag(config, env_name, version_bump)
+        _create_version_tag(config, env_name, release_info)
 
     except subprocess.CalledProcessError as e:
         # Send failure notification if configured
-        if failure_notifier:
-            failure_notifier(f"Deployment failed with exit code {e.returncode}")
+        _send_notification(config, env_name, release_info, success=False,
+                          error_message=f"Deployment failed with exit code {e.returncode}")
         raise
     except Exception as e:
         # Send failure notification for any other exception
-        if failure_notifier:
-            failure_notifier(str(e))
+        _send_notification(config, env_name, release_info, success=False, error_message=str(e))
         raise
     finally:
         # Clean up
@@ -138,226 +137,189 @@ def deploy_project(config: DjaployConfig,
             os.unlink(processed_inventory_file)
 
 
-def _setup_failure_notification(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
-    """
-    Set up failure notification capability for the deployment.
-
-    Returns a callable that can send failure notifications, or None if
-    notifications are not configured.
-    """
-    # Check if notifications module is enabled
-    if "djaploy.modules.notifications" not in config.modules:
-        return None
-
-    notifications_config = (
-        config.module_configs.get("notifications")
-        or config.module_configs.get("djaploy.modules.notifications")
+def _get_module_config(config: DjaployConfig, module_name: str) -> Dict[str, Any]:
+    """Get module config, checking both short and full module path keys."""
+    return (
+        config.module_configs.get(module_name)
+        or config.module_configs.get(f"djaploy.modules.{module_name}")
         or {}
     )
-    if not notifications_config:
-        return None
-
-    # Check if failure notifications are enabled
-    if not notifications_config.get("notify_on_failure", True):
-        return None
-
-    # Check if this environment should be notified
-    notify_environments = notifications_config.get("notify_environments")
-    if notify_environments and env_name not in notify_environments:
-        return None
-
-    # Set up the notification backend
-    try:
-        from .notifications import get_notification_backend
-        from .versioning import get_latest_version_tag, get_current_commit_hash, increment_version
-        from .changelog import get_changelog_generator
-
-        backend_type = notifications_config.get("backend", "slack")
-        backend_config = notifications_config.get("backend_config", {})
-        backend = get_notification_backend(backend_type, backend_config)
-
-        if not backend:
-            return None
-
-        # Pre-compute version info
-        git_dir = config.git_dir
-        current_version = get_latest_version_tag(git_dir)
-        commit = get_current_commit_hash(git_dir, short=False)
-
-        # Only increment version if there are new commits
-        from .versioning import get_commits_since_tag
-        commits = get_commits_since_tag(git_dir, current_version)
-        if commits:
-            increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
-            new_version = increment_version(current_version, increment_type)
-        else:
-            new_version = current_version or "v1.0.0"
-
-        def send_failure(error_message: str = "") -> bool:
-            """Send failure notification"""
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            context = {
-                "env": env_name,
-                "version": new_version,
-                "commit": commit or "unknown",
-                "changelog": "",
-                "success": False,
-                "timestamp": timestamp,
-                "project_name": config.project_name,
-                "display_name": notifications_config.get("display_name", config.project_name),
-                "error_message": error_message,
-            }
-            message = f"Deployment failed for {config.project_name} to {env_name}"
-            if error_message:
-                message += f": {error_message}"
-
-            try:
-                return backend.send(message, context)
-            except Exception as e:
-                print(f"[NOTIFICATIONS] Warning: Failed to send failure notification: {e}")
-                return False
-
-        return send_failure
-
-    except ImportError:
-        return None
-    except Exception as e:
-        print(f"[NOTIFICATIONS] Warning: Failed to set up failure notifications: {e}")
-        return None
 
 
-def _send_success_notification(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
-    """Send success notification after deployment completes."""
-    if "djaploy.modules.notifications" not in config.modules:
-        return
+def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Calculate release info once for use by notifications and tagging.
 
-    notifications_config = (
-        config.module_configs.get("notifications")
-        or config.module_configs.get("djaploy.modules.notifications")
-        or {}
-    )
-    if not notifications_config:
-        return
-
-    # Check if this environment should be notified
-    notify_environments = notifications_config.get("notify_environments")
-    if notify_environments and env_name not in notify_environments:
-        print(f"[NOTIFICATIONS] Skipping notification for environment: {env_name}")
-        return
-
-    try:
-        from .notifications import get_notification_backend
-        from .versioning import get_latest_version_tag, get_current_commit_hash, increment_version, get_commits_since_tag
-        from .changelog import get_changelog_generator
-
-        # Set up backend
-        backend_type = notifications_config.get("backend", "slack")
-        backend_config = notifications_config.get("backend_config", {})
-        backend = get_notification_backend(backend_type, backend_config)
-
-        if not backend:
-            return
-
-        # Get version info (tag not created yet, so commits since current tag is accurate)
-        git_dir = config.git_dir
-        current_version = get_latest_version_tag(git_dir)
-        commit = get_current_commit_hash(git_dir, short=False)
-        commits = get_commits_since_tag(git_dir, current_version)
-
-        # Calculate new version
-        if commits:
-            increment_type = version_bump or config.module_configs.get("versioning", {}).get("increment_type", "patch")
-            new_version = increment_version(current_version, increment_type)
-        else:
-            new_version = current_version or "v1.0.0"
-
-        # Generate changelog
-        generator_type = notifications_config.get("changelog_generator", "simple")
-        generator_config = notifications_config.get("changelog_config", {})
-        changelog_generator = get_changelog_generator(generator_type, generator_config)
-        changelog = ""
-        if commits and changelog_generator:
-            try:
-                changelog = changelog_generator.generate(commits)
-            except Exception as e:
-                print(f"[NOTIFICATIONS] Warning: Failed to generate changelog: {e}")
-                changelog = commits
-
-        # Build context
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        context = {
-            "env": env_name,
-            "version": new_version,
-            "commit": commit or "unknown",
-            "changelog": changelog,
-            "success": True,
-            "timestamp": timestamp,
-            "project_name": config.project_name,
-            "display_name": notifications_config.get("display_name", config.project_name),
-        }
-
-        message = f"Deployment succeeded: {config.project_name} {new_version} to {env_name}"
-
-        if backend.send(message, context):
-            print(f"[NOTIFICATIONS] Sent success notification for {env_name}")
-        else:
-            print(f"[NOTIFICATIONS] Warning: Failed to send notification")
-
-    except Exception as e:
-        print(f"[NOTIFICATIONS] Warning: Failed to send success notification: {e}")
-
-
-def _create_version_tag(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None):
-    """Create version tag after successful deployment."""
+    Returns None if notifications are not configured, otherwise returns a dict with:
+        - current_version: Current git tag (or None)
+        - new_version: Calculated new version
+        - commit: Current commit hash
+        - commits: Commit messages since last tag
+        - changelog: Generated changelog text
+        - display_name: Display name for notifications
+        - should_notify: Whether to send notification for this env
+        - should_tag: Whether to create tag for this env
+        - notify_on_failure: Whether to notify on failure
+        - webhook_url: Slack webhook URL
+        - push_tags: Whether to push tags
+    """
     if "djaploy.modules.versioning" not in config.modules:
-        return
+        return None
 
-    versioning_config = (
-        config.module_configs.get("versioning")
-        or config.module_configs.get("djaploy.modules.versioning")
-        or {}
-    )
+    versioning_config = _get_module_config(config, "versioning")
+    notifications_config = _get_module_config(config, "notifications")
 
-    # Check if this environment should be tagged
-    tag_environments = versioning_config.get("tag_environments", ["production"])
-    if env_name not in tag_environments:
-        print(f"[VERSIONING] Skipping tag creation for environment: {env_name}")
-        return
+    # Check if notifications are configured
+    backend_config = notifications_config.get("backend_config", {})
+    webhook_url = backend_config.get("webhook_url")
+    if not webhook_url:
+        return None
 
     try:
         from .versioning import (
             get_latest_version_tag,
             get_commits_since_tag,
+            get_current_commit_hash,
             increment_version,
-            create_git_tag,
+            get_tag_message,
+            extract_changelog_from_tag,
         )
+        from .changelog import get_changelog_generator
 
         git_dir = config.git_dir
         current_version = get_latest_version_tag(git_dir)
+        commit = get_current_commit_hash(git_dir, short=False)
         commits = get_commits_since_tag(git_dir, current_version)
 
-        # Only create tag if there are new commits
-        if not commits:
-            print(f"[VERSIONING] No new commits since {current_version or 'initial'}, skipping tag")
-            return
-
         # Calculate new version
-        increment_type = version_bump or versioning_config.get("increment_type", "patch")
-        new_version = increment_version(current_version, increment_type)
-
-        # Create tag
-        push_tags = versioning_config.get("push_tags", True)
-        tag_message = f"Release {new_version}\n\n{commits}"
-
-        if create_git_tag(git_dir, new_version, message=tag_message, push=push_tags):
-            print(f"[VERSIONING] Created tag {new_version}")
-            if push_tags:
-                print(f"[VERSIONING] Pushed tag to origin")
+        if commits:
+            increment_type = version_bump or versioning_config.get("increment_type", "patch")
+            new_version = increment_version(current_version, increment_type)
         else:
-            print(f"[VERSIONING] Warning: Failed to create tag {new_version}")
+            new_version = current_version or "v1.0.0"
+
+        # Generate changelog
+        changelog = ""
+        if commits:
+            generator_type = notifications_config.get("changelog_generator", "simple")
+            generator_config = notifications_config.get("changelog_config", {})
+            generator = get_changelog_generator(generator_type, generator_config)
+            try:
+                changelog = generator.generate(commits)
+            except Exception as e:
+                print(f"[RELEASE] Warning: Failed to generate changelog: {e}")
+                changelog = commits
+        elif current_version:
+            # No new commits - extract changelog from existing tag message
+            tag_message = get_tag_message(git_dir, current_version)
+            if tag_message:
+                changelog = extract_changelog_from_tag(tag_message)
+                print(f"[RELEASE] Using changelog from existing tag {current_version}")
+
+        # Determine which environments to notify/tag
+        tag_environments = versioning_config.get("tag_environments", ["production"])
+        notify_environments = notifications_config.get("notify_environments", tag_environments)
+        should_notify = env_name in notify_environments
+        should_tag = env_name in tag_environments
+
+        return {
+            "current_version": current_version,
+            "new_version": new_version,
+            "commit": commit or "unknown",
+            "commits": commits,
+            "changelog": changelog,
+            "display_name": notifications_config.get("display_name", config.project_name),
+            "should_notify": should_notify,
+            "should_tag": should_tag,
+            "notify_on_failure": notifications_config.get("notify_on_failure", True),
+            "webhook_url": webhook_url,
+            "push_tags": versioning_config.get("push_tags", True),
+        }
 
     except Exception as e:
-        print(f"[VERSIONING] Warning: Failed to create version tag: {e}")
+        print(f"[RELEASE] Warning: Failed to get release info: {e}")
+        return None
+
+
+def _send_notification(config: DjaployConfig, env_name: str, release_info: Dict[str, Any], success: bool, error_message: str = ""):
+    """Send deployment notification (success or failure)."""
+    if not release_info or not release_info.get("should_notify"):
+        return
+
+    if not success and not release_info.get("notify_on_failure", True):
+        return
+
+    try:
+        from .notifications import get_notification_backend
+
+        backend = get_notification_backend("slack", {"webhook_url": release_info["webhook_url"]})
+        if not backend:
+            return
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        context = {
+            "env": env_name,
+            "version": release_info["new_version"],
+            "commit": release_info["commit"],
+            "changelog": release_info["changelog"] if success else "",
+            "success": success,
+            "timestamp": timestamp,
+            "project_name": config.project_name,
+            "display_name": release_info["display_name"],
+            "error_message": error_message,
+        }
+
+        if success:
+            message = f"Deployment succeeded: {config.project_name} {release_info['new_version']} to {env_name}"
+        else:
+            message = f"Deployment failed for {config.project_name} to {env_name}"
+            if error_message:
+                message += f": {error_message}"
+
+        if backend.send(message, context):
+            status = "success" if success else "failure"
+            print(f"[RELEASE] Sent {status} notification for {env_name}")
+        else:
+            print(f"[RELEASE] Warning: Failed to send notification")
+
+    except Exception as e:
+        print(f"[RELEASE] Warning: Failed to send notification: {e}")
+
+
+def _create_version_tag(config: DjaployConfig, env_name: str, release_info: Dict[str, Any]):
+    """Create version tag after successful deployment."""
+    if not release_info or not release_info.get("should_tag"):
+        return
+
+    # Skip if no new commits
+    if not release_info.get("commits"):
+        print(f"[RELEASE] No new commits since {release_info.get('current_version') or 'initial'}, skipping tag")
+        return
+
+    try:
+        from .versioning import create_git_tag
+
+        new_version = release_info["new_version"]
+        changelog = release_info.get("changelog", "")
+        commits = release_info.get("commits", "")
+
+        # Build tag message: summary first, then raw commits
+        if changelog and changelog != commits:
+            tag_message = f"Release {new_version}\n\n{changelog}\n\n---\nCommits:\n{commits}"
+        else:
+            tag_message = f"Release {new_version}\n\n{commits}"
+
+        push_tags = release_info.get("push_tags", True)
+
+        if create_git_tag(config.git_dir, new_version, message=tag_message, push=push_tags):
+            print(f"[RELEASE] Created tag {new_version}")
+            if push_tags:
+                print(f"[RELEASE] Pushed tag to origin")
+        else:
+            print(f"[RELEASE] Warning: Failed to create tag {new_version}")
+
+    except Exception as e:
+        print(f"[RELEASE] Warning: Failed to create version tag: {e}")
 
 
 def _generate_configure_script(config: DjaployConfig, modules: List) -> str:

@@ -8,6 +8,47 @@ from pathlib import Path
 from typing import Optional
 
 
+def get_default_remote(git_dir: Path) -> str:
+    """Get the default remote for pushing tags.
+
+    Tries to detect the remote in this order:
+    1. Remote that the current branch tracks
+    2. First available remote
+    3. Falls back to 'origin'
+    """
+    # Try to get the remote the current branch tracks
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            capture_output=True,
+            check=True,
+            text=True,
+            cwd=git_dir,
+        )
+        # Returns something like "origin/main" - extract remote name
+        upstream = result.stdout.strip()
+        if "/" in upstream:
+            return upstream.split("/")[0]
+    except subprocess.CalledProcessError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["git", "remote"],
+            capture_output=True,
+            check=True,
+            text=True,
+            cwd=git_dir,
+        )
+        remotes = result.stdout.strip().split("\n")
+        if remotes and remotes[0]:
+            return remotes[0]
+    except subprocess.CalledProcessError:
+        pass
+
+    return "origin"
+
+
 def get_version_tags(git_dir: Path, limit: int = 10) -> list:
     """Get list of semantic version tags sorted by version (newest first)"""
     try:
@@ -79,8 +120,11 @@ def increment_version(version: Optional[str], increment_type: str = "patch") -> 
 
 
 def create_git_tag(git_dir: Path, tag: str, message: Optional[str] = None, push: bool = True) -> bool:
-    """Create annotated git tag and optionally push to origin"""
+    """Create annotated git tag and optionally push to the detected remote"""
+    print(f"[VERSIONING] Creating tag '{tag}' in {git_dir}")
+
     try:
+        # Create tag locally
         tag_message = message or tag
         subprocess.run(
             ["git", "tag", "-a", tag, "-m", tag_message],
@@ -89,20 +133,44 @@ def create_git_tag(git_dir: Path, tag: str, message: Optional[str] = None, push:
             text=True,
             cwd=git_dir,
         )
+        print(f"[VERSIONING] Tag '{tag}' created locally")
 
         if push:
-            subprocess.run(
-                ["git", "push", "origin", tag],
+            # Detect the remote to push to
+            remote = get_default_remote(git_dir)
+            print(f"[VERSIONING] Detected remote: '{remote}'")
+
+            # Show git remote for debugging
+            remote_result = subprocess.run(
+                ["git", "remote", "-v"],
+                capture_output=True,
+                text=True,
+                cwd=git_dir,
+            )
+            print(f"[VERSIONING] Git remotes:\n{remote_result.stdout.strip()}")
+
+            # Push tag to detected remote
+            push_result = subprocess.run(
+                ["git", "push", remote, tag],
                 capture_output=True,
                 check=True,
                 text=True,
                 cwd=git_dir,
             )
+            print(f"[VERSIONING] Tag '{tag}' pushed to '{remote}'")
+            if push_result.stderr:
+                print(f"[VERSIONING] Push output: {push_result.stderr.strip()}")
 
         return True
 
     except subprocess.CalledProcessError as e:
-        print(f"[VERSIONING] Warning: Failed to create/push tag '{tag}': {e.stderr}")
+        print(f"[VERSIONING] ERROR: Failed to create/push tag '{tag}'")
+        print(f"[VERSIONING] Command: {e.cmd}")
+        print(f"[VERSIONING] Return code: {e.returncode}")
+        if e.stdout:
+            print(f"[VERSIONING] Stdout: {e.stdout}")
+        if e.stderr:
+            print(f"[VERSIONING] Stderr: {e.stderr}")
         return False
 
 
@@ -158,3 +226,37 @@ def tag_exists(git_dir: Path, tag: str) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def get_tag_message(git_dir: Path, tag: str) -> Optional[str]:
+    """Get the message/description of an annotated git tag"""
+    try:
+        result = subprocess.run(
+            ["git", "tag", "-l", "--format=%(contents)", tag],
+            capture_output=True,
+            check=True,
+            text=True,
+            cwd=git_dir,
+        )
+        message = result.stdout.strip()
+        return message if message else None
+    except subprocess.CalledProcessError:
+        return None
+
+
+def extract_changelog_from_tag(tag_message: str) -> str:
+    """Extract the changelog summary from a tag message.
+
+    """
+    if not tag_message:
+        return ""
+
+    if "---" in tag_message:
+        content = tag_message.split("---")[0].strip()
+    else:
+        content = tag_message.strip()
+
+    lines = content.split("\n")
+    if len(lines) > 1:
+        return "\n".join(lines[1:]).strip()
+    return content

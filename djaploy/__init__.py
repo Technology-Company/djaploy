@@ -13,6 +13,8 @@ from .versioning import (
     create_git_tag,
     get_commits_since_tag,
     get_current_commit_hash,
+    get_tag_message,
+    extract_changelog_from_tag,
 )
 
 # Changelog generators
@@ -44,6 +46,8 @@ __all__ = [
     "create_git_tag",
     "get_commits_since_tag",
     "get_current_commit_hash",
+    "get_tag_message",
+    "extract_changelog_from_tag",
     # Changelog
     "ChangelogGenerator",
     "SimpleChangelogGenerator",
