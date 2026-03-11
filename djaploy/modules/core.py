@@ -488,7 +488,7 @@ class CoreModule(BaseModule):
             ],
             _sudo=True,
         )
-`
+
         server.shell(
             name="Enable NGINX sites",
             commands=[
