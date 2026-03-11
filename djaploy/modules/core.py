@@ -136,15 +136,19 @@ class CoreModule(BaseModule):
                 _sudo=True,
             )
 
-        # Create shared resource directories
+        # Create shared resource directories (mkdir -p for nested paths)
         shared_resources = getattr(project_config, 'shared_resources', [])
-        for resource in shared_resources:
-            if not resource.startswith('.'):
-                files.directory(
-                    name=f"Create shared/{resource} directory",
-                    path=f"{app_path}/shared/{resource}",
-                    user=app_user,
-                    group=app_user,
+        if shared_resources:
+            mkdir_commands = [
+                f"mkdir -p {app_path}/shared/{resource}"
+                for resource in shared_resources
+                if not resource.startswith('.')
+            ]
+            if mkdir_commands:
+                mkdir_commands.append(f"chown -R {app_user}:{app_user} {app_path}/shared")
+                server.shell(
+                    name="Create shared resource directories",
+                    commands=mkdir_commands,
                     _sudo=True,
                 )
 

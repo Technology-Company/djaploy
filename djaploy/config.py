@@ -71,7 +71,7 @@ class DjaployConfig:
     artifact_dir: str = "deployment"
     deployment_strategy: str = "in_place"  # "in_place" or "zero_downtime"
     keep_releases: int = 5  # Number of releases to keep (zero_downtime only)
-    # Paths (relative to app root) to symlink from shared/ into each release.
+    # Paths (relative to git/artifact root) to symlink from shared/ into each release.
     # When None (default), auto-detected from Django settings (STATIC_ROOT,
     # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
     # Note: venv is shared implicitly via the stable current/ symlink path.
@@ -118,8 +118,8 @@ class DjaployConfig:
         """Auto-detect shared resources from Django settings.
 
         Resolves STATIC_ROOT, MEDIA_ROOT and PRIVATE_MEDIA_ROOT relative to
-        project_dir. Only includes paths that are inside the project directory
-        (paths outside the app dir don't need symlinking).
+        git_dir (the artifact/release root). Only includes paths that are
+        inside the project directory (paths outside don't need symlinking).
         """
         resources = []
         try:
@@ -127,17 +127,22 @@ class DjaployConfig:
             if not django_settings.configured:
                 return resources
 
-            base_dir = Path(django_settings.BASE_DIR)
+            # Resolve relative to git_dir (artifact root) so paths match
+            # the release directory structure, not BASE_DIR which may be
+            # a subdirectory of the artifact.
+            artifact_root = self.git_dir or self.project_dir
+            if artifact_root is None:
+                return resources
 
             for setting_name in ('STATIC_ROOT', 'MEDIA_ROOT', 'PRIVATE_MEDIA_ROOT'):
                 value = getattr(django_settings, setting_name, None)
                 if value:
                     abs_path = Path(value)
                     try:
-                        rel = str(abs_path.relative_to(base_dir))
+                        rel = str(abs_path.relative_to(artifact_root))
                         resources.append(rel)
                     except ValueError:
-                        pass  # Outside BASE_DIR, no symlink needed
+                        pass  # Outside artifact root, no symlink needed
         except Exception:
             pass
         return resources
