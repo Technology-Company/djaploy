@@ -41,8 +41,8 @@ class NginxModule(BaseModule):
             )
     
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Deploy NGINX configuration"""
-        
+        """Deploy NGINX configuration files and certificates"""
+
         # Clear default sites
         server.shell(
             name="Clear default NGINX sites",
@@ -52,11 +52,11 @@ class NginxModule(BaseModule):
             ],
             _sudo=True,
         )
-        
+
         # Deploy SSL certificates if configured
         domains = getattr(host_data, 'domains', [])
         app_user = getattr(host_data, 'app_user', 'app')
-        
+
         for domain_conf in domains:
             if "cert_file" in domain_conf and "key_file" in domain_conf:
                 files.put(
@@ -75,7 +75,7 @@ class NginxModule(BaseModule):
                     force=True,
                     _sudo=True,
                 )
-        
+
         # NGINX configurations are provided by the project in deploy_files
         # Just enable the sites that were copied
         server.shell(
@@ -85,8 +85,9 @@ class NginxModule(BaseModule):
             ],
             _sudo=True,
         )
-        
-        # Reload NGINX
+
+    def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
+        """Reload NGINX after all modules have deployed (migrations complete)"""
         systemd.service(
             name="Reload NGINX",
             service="nginx",

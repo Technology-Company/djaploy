@@ -427,14 +427,16 @@ artifact_path = Path("{artifact_path}")
 # Run module deployments
 """
     
-    # Add module deployment calls
-    for module in modules:
-        script += f"""
-# Deploy {module.name}
+    # Run deployment phases across all modules.
+    # All pre_deploy first, then all deploy, then all post_deploy.
+    # This ensures settings files (e.g. local.py) are in place before
+    # migrations run, regardless of module ordering.
+    for phase in ["pre_deploy", "deploy", "post_deploy"]:
+        for module in modules:
+            script += f"""
+# {phase} {module.name}
 module = {module.__class__.__name__}({module.config})
-module.pre_deploy(host.data, project_config, artifact_path)
-module.deploy(host.data, project_config, artifact_path)
-module.post_deploy(host.data, project_config, artifact_path)
+module.{phase}(host.data, project_config, artifact_path)
 """
     
     return script

@@ -24,7 +24,7 @@ class SystemdModule(BaseModule):
         pass
     
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
-        """Deploy systemd service configurations"""
+        """Deploy systemd service files and reload daemon"""
 
         # Systemd files are provided by the project in deploy_files
         # No need to generate them here
@@ -34,6 +34,9 @@ class SystemdModule(BaseModule):
             name="Reload systemd daemon",
             _sudo=True,
         )
+
+    def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
+        """Start/restart services after all modules have deployed (migrations complete)"""
 
         zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
 
@@ -63,7 +66,7 @@ class SystemdModule(BaseModule):
                     restarted=True,  # Restart on deploy
                     _sudo=True,
                 )
-        
+
         # Start and enable timer services
         for timer in getattr(host_data, "timer_services", []):
             systemd.service(

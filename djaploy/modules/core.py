@@ -246,6 +246,17 @@ class CoreModule(BaseModule):
         else:
             self._deploy_in_place(host_data, project_config, artifact_path)
 
+    def post_deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
+        """Run migrations and collectstatic after all modules have deployed their files"""
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        if self._is_zero_downtime(project_config):
+            app_path = f"{self._get_app_path(host_data, project_config)}/current"
+        else:
+            app_path = self._get_app_path(host_data, project_config)
+
+        self._run_migrations(app_user, app_path, project_config)
+        self._collect_static(app_user, app_path, project_config)
+
     def rollback(self, host_data: Dict[str, Any], project_config: Dict[str, Any], release: str = None):
         """Roll back to a previous release by swapping the current symlink"""
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
@@ -326,10 +337,8 @@ class CoreModule(BaseModule):
         if getattr(host_data, 'pregenerate_certificates', False):
             self._generate_ssl_certificates(host_data, app_user)
 
-        # Install dependencies and run migrations
+        # Install dependencies (migrations and collectstatic deferred to post_deploy)
         self._install_dependencies(app_user, app_path, project_config)
-        self._run_migrations(app_user, app_path, project_config)
-        self._collect_static(app_user, app_path, project_config)
 
     def _deploy_zero_downtime(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
         """Deploy using release directories and symlink swap"""
@@ -428,13 +437,13 @@ class CoreModule(BaseModule):
             _use_sudo_login=True,
         )
 
-        # Install deps and run Django tasks via the stable current/ path.
+        # Install deps via the stable current/ path.
         # Poetry keys virtualenvs by directory — using current/ means it
         # reuses the same venv across deploys (shared venv behavior).
+        # Migrations and collectstatic are deferred to post_deploy so that
+        # other modules (e.g. local_settings) can place config files first.
         current_path = f"{app_path}/current"
         self._install_dependencies(app_user, current_path, project_config)
-        self._run_migrations(app_user, current_path, project_config)
-        self._collect_static(app_user, current_path, project_config)
 
         # Clean up old releases
         keep_releases = getattr(project_config, 'keep_releases', 5)
@@ -473,10 +482,17 @@ class CoreModule(BaseModule):
         )
 
         server.shell(
-            name="Clear default NGINX site and enable application sites",
+            name="Clear default NGINX sites",
             commands=[
                 "rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default",
-                "ln -fs /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
+            ],
+            _sudo=True,
+        )
+`
+        server.shell(
+            name="Enable NGINX sites",
+            commands=[
+                "for f in /etc/nginx/sites-available/*; do [ -f \"$f\" ] && ln -fs \"$f\" /etc/nginx/sites-enabled/; done",
             ],
             _sudo=True,
         )
