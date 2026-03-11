@@ -63,6 +63,13 @@ def _create_local_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
         )
         file_list = [f for f in result.stdout.splitlines() if f.strip()]
 
+        # Include extra files (e.g. gitignored build artifacts like Tailwind CSS)
+        artifact_config = config.module_configs.get('artifact', {})
+        extra_files = artifact_config.get('extra_files', [])
+        for extra_file in extra_files:
+            if os.path.exists(extra_file) and extra_file not in file_list:
+                file_list.append(extra_file)
+
         # Create tar.gz archive using Python's tarfile module
         import tarfile
         with tarfile.open(str(artifact_file), "w:gz") as tar:

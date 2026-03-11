@@ -55,6 +55,16 @@ class CoreModule(BaseModule):
             _sudo=True,
         )
 
+        # For zero-downtime deploys, gunicorn owns the socket instead of systemd.
+        # Add www-data (nginx) to the app user's group so it can access
+        # the gunicorn-owned unix socket via group permissions.
+        if self._is_zero_downtime(project_config):
+            server.shell(
+                name="Add www-data to app user group",
+                commands=[f"usermod -aG {app_user} www-data"],
+                _sudo=True,
+            )
+
         # Update apt repositories
         apt.update(
             name="Update apt repositories",

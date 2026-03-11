@@ -40,10 +40,12 @@ class SystemdModule(BaseModule):
 
         zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
 
-        # Start and enable services
         for service in getattr(host_data, "services", []):
             if zero_downtime:
-                # Use reload (sends USR2) for zero-downtime deployment
+                # Reload sends USR2 — gunicorn forks a new master that re-reads
+                # code via the current/ symlink, spawns new workers, then the old
+                # master gracefully shuts down. Requires gunicorn to own its socket
+                # (not systemd socket activation).
                 systemd.service(
                     name=f"Start and enable {service}",
                     service=service,
@@ -52,18 +54,18 @@ class SystemdModule(BaseModule):
                     _sudo=True,
                 )
                 systemd.service(
-                    name=f"Reload {service} (USR2)",
+                    name=f"Reload {service} (zero-downtime)",
                     service=service,
                     reloaded=True,
                     _sudo=True,
                 )
             else:
                 systemd.service(
-                    name=f"Start and enable {service}",
+                    name=f"Restart and enable {service}",
                     service=service,
                     running=True,
                     enabled=True,
-                    restarted=True,  # Restart on deploy
+                    restarted=True,
                     _sudo=True,
                 )
 
@@ -78,14 +80,23 @@ class SystemdModule(BaseModule):
             )
     
     def rollback(self, host_data: Dict[str, Any], project_config: Any, release: str = None):
-        """Reload services after a rollback (sends USR2)"""
+        """Reload services after a rollback (USR2 for zero-downtime)"""
+        zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
         for service in getattr(host_data, "services", []):
-            systemd.service(
-                name=f"Reload {service} after rollback",
-                service=service,
-                reloaded=True,
-                _sudo=True,
-            )
+            if zero_downtime:
+                systemd.service(
+                    name=f"Reload {service} after rollback",
+                    service=service,
+                    reloaded=True,
+                    _sudo=True,
+                )
+            else:
+                systemd.service(
+                    name=f"Restart {service} after rollback",
+                    service=service,
+                    restarted=True,
+                    _sudo=True,
+                )
 
     def get_services(self) -> List[str]:
         """Get services managed by this module"""
