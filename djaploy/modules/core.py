@@ -602,10 +602,14 @@ class CoreModule(BaseModule):
 
         manage_py = self._get_manage_py_path(app_path, project_config)
         if manage_py:
+            # For zero-downtime, static files are in a shared directory symlinked
+            # into each release. Don't use --clear so old hashed filenames survive
+            # across releases (browsers may still reference them during the handoff).
+            clear_flag = "" if self._is_zero_downtime(project_config) else " --clear"
             server.shell(
                 name="Collect static files",
                 commands=[
-                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} collectstatic --noinput --clear",
+                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} collectstatic --noinput{clear_flag}",
                 ],
                 _sudo=True,
                 _sudo_user=app_user,

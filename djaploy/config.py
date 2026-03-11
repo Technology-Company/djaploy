@@ -72,8 +72,8 @@ class DjaployConfig:
     deployment_strategy: str = "in_place"  # "in_place" or "zero_downtime"
     keep_releases: int = 5  # Number of releases to keep (zero_downtime only)
     # Paths (relative to app root) to symlink from shared/ into each release.
-    # When None (default), auto-detected from Django settings (MEDIA_ROOT,
-    # PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
+    # When None (default), auto-detected from Django settings (STATIC_ROOT,
+    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
     # Note: venv is shared implicitly via the stable current/ symlink path.
     shared_resources: Optional[List[str]] = None
     # External database directory. Created during configure_server with correct
@@ -117,9 +117,9 @@ class DjaployConfig:
     def _resolve_shared_resources(self) -> List[str]:
         """Auto-detect shared resources from Django settings.
 
-        Resolves MEDIA_ROOT and PRIVATE_MEDIA_ROOT relative to project_dir.
-        Only includes paths that are inside the project directory (paths outside
-        the app dir don't need symlinking).
+        Resolves STATIC_ROOT, MEDIA_ROOT and PRIVATE_MEDIA_ROOT relative to
+        project_dir. Only includes paths that are inside the project directory
+        (paths outside the app dir don't need symlinking).
         """
         resources = []
         try:
@@ -129,7 +129,7 @@ class DjaployConfig:
 
             base_dir = Path(django_settings.BASE_DIR)
 
-            for setting_name in ('MEDIA_ROOT', 'PRIVATE_MEDIA_ROOT'):
+            for setting_name in ('STATIC_ROOT', 'MEDIA_ROOT', 'PRIVATE_MEDIA_ROOT'):
                 value = getattr(django_settings, setting_name, None)
                 if value:
                     abs_path = Path(value)
