@@ -302,11 +302,16 @@ class CoreModule(BaseModule):
 
     def rollback(self, host_data: Dict[str, Any], project_config: Dict[str, Any], release: str = None):
         """Roll back to a previous release by swapping the current symlink"""
+        import re
+
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
         app_path = self._get_app_path(host_data, project_config)
         releases_path = f"{app_path}/releases"
 
         if release:
+            # Validate release name to prevent path traversal / shell injection
+            if not re.match(r'^[a-zA-Z0-9._-]+$', release):
+                raise ValueError(f"Invalid release name: {release}")
             server.shell(
                 name=f"Roll back to release {release}",
                 commands=[
@@ -319,10 +324,13 @@ class CoreModule(BaseModule):
                 _use_sudo_login=True,
             )
         else:
+            # Resolve current release from symlink, then pick the most recent
+            # release that isn't the current one
             server.shell(
                 name="Roll back to previous release",
                 commands=[
-                    f'PREV=$(cd {releases_path} && ls -1t | sed -n "2p") && '
+                    f'CURR=$(basename "$(readlink -f {app_path}/current)") && '
+                    f'PREV=$(cd {releases_path} && ls -1t | grep -v "^$CURR$" | head -n 1) && '
                     f'test -n "$PREV" || (echo "No previous release to roll back to" && exit 1) && '
                     f'ln -sfn {releases_path}/$PREV {app_path}/current.tmp && mv -Tf {app_path}/current.tmp {app_path}/current && '
                     f'echo "Rolled back to $PREV"',
@@ -448,6 +456,9 @@ class CoreModule(BaseModule):
                 parent = str(Path(resource).parent)
                 if parent and parent != '.':
                     symlink_commands.append(f"mkdir -p {release_path}/{parent}")
+                # Remove extracted dir/file first — ln -sfn into an existing
+                # directory creates the link inside it instead of replacing it
+                symlink_commands.append(f"rm -rf {release_path}/{resource}")
                 symlink_commands.append(
                     f"ln -sfn {shared_path}/{resource} {release_path}/{resource}"
                 )
@@ -486,7 +497,7 @@ class CoreModule(BaseModule):
         host.data._zero_downtime_release_path = release_path
 
         # Clean up old releases
-        keep_releases = getattr(project_config, 'keep_releases', 5)
+        keep_releases = max(getattr(project_config, 'keep_releases', 5), 1)
         server.shell(
             name=f"Clean up old releases (keeping {keep_releases})",
             commands=[
