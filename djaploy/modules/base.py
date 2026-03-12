@@ -68,10 +68,31 @@ class BaseModule(ABC):
     def pre_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Hook called before deploy"""
         pass
-    
+
     def post_deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Hook called after deploy"""
         pass
+
+    def restore(self, host_data: Dict[str, Any], project_config: Any, restore_opts: Dict[str, Any]):
+        """
+        Restore from backup on the target server.
+        This is run during the restore_backup phase via pyinfra.
+
+        Args:
+            host_data: Host-specific configuration data (target server)
+            project_config: The project's DjaployConfig instance
+            restore_opts: Restore options (backup_host_name, date, db_only, etc.)
+        """
+        pass
+
+    def pre_restore(self, host_data: Dict[str, Any], project_config: Any, restore_opts: Dict[str, Any]):
+        """Hook called before restore"""
+        pass
+
+    def post_restore(self, host_data: Dict[str, Any], project_config: Any, restore_opts: Dict[str, Any]):
+        """Hook called after restore"""
+        pass
+
 
     def rollback(self, host_data: Dict[str, Any], project_config: Any, release: Optional[str] = None):
         """
@@ -84,7 +105,7 @@ class BaseModule(ABC):
             release: Specific release to roll back to, or None for previous
         """
         pass
-    
+
     def validate_config(self) -> bool:
         """Validate the module configuration"""
         return True
