@@ -231,9 +231,11 @@ DATABASES=({db_array})
 for DB in "${{DATABASES[@]}}"; do
     if [ -f "$DB_DIR/$DB" ]; then
         log_message "Backing up database: $DB"
+        # Ensure parent directory exists (for paths like bostad/db.sqlite3)
+        mkdir -p "$(dirname "$TEMP_BACKUP_DIR/$DB")"
         # Remove any existing backup file first
         rm -f "$TEMP_BACKUP_DIR/$DB"
-        
+
         # Use VACUUM INTO for consistent, compacted backup
         if sqlite3 "$DB_DIR/$DB" "VACUUM INTO '$TEMP_BACKUP_DIR/$DB';" 2>> "$LOG_FILE"; then
             log_message "Successfully backed up $DB"
@@ -250,8 +252,13 @@ done
 log_message "Compressing database backups"
 ARCHIVE_NAME="dbs_backup_${{TIMESTAMP}}.tar.gz"
 
-# Count .db files to verify they exist
-DB_COUNT=$(ls -1 "$TEMP_BACKUP_DIR"/*.db 2>/dev/null | wc -l)
+# Count backed up database files to verify they exist
+DB_COUNT=0
+for DB in "${{DATABASES[@]}}"; do
+    if [ -f "$TEMP_BACKUP_DIR/$DB" ]; then
+        DB_COUNT=$((DB_COUNT + 1))
+    fi
+done
 if [ "$DB_COUNT" -eq 0 ]; then
     log_message "ERROR: No database files found to compress"
     exit 1
@@ -270,10 +277,12 @@ done
 if [ -n "$DB_FILES_TO_COMPRESS" ]; then
     if tar -czf "$TEMP_BACKUP_DIR/$ARCHIVE_NAME" -C "$TEMP_BACKUP_DIR" $DB_FILES_TO_COMPRESS 2>> "$LOG_FILE"; then
         log_message "Successfully compressed databases to $ARCHIVE_NAME"
-        # Remove individual .db files after compression
+        # Remove individual database files and their parent dirs after compression
         for DB in "${{DATABASES[@]}}"; do
             rm -f "$TEMP_BACKUP_DIR/$DB"
         done
+        # Clean up any subdirectories created for nested database paths
+        find "$TEMP_BACKUP_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     else
         log_message "ERROR: Failed to compress databases"
         exit 1
