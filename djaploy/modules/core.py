@@ -57,11 +57,18 @@ class CoreModule(BaseModule):
 
         # For zero-downtime deploys, gunicorn owns the socket instead of systemd.
         # Add www-data (nginx) to the app user's group so it can access
-        # the gunicorn-owned unix socket via group permissions.
+        # the gunicorn-owned unix socket and static files via group permissions.
         if self._is_zero_downtime(project_config):
             server.shell(
                 name="Add www-data to app user group",
                 commands=[f"usermod -aG {app_user} www-data"],
+                _sudo=True,
+            )
+            # Allow group traversal of home dir so nginx (www-data) can
+            # follow symlinks to shared static/media files
+            server.shell(
+                name="Allow group traversal of app user home",
+                commands=[f"chmod 710 /home/{app_user}"],
                 _sudo=True,
             )
 
