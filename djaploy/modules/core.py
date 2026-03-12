@@ -3,6 +3,7 @@ Core deployment module for djaploy
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -16,11 +17,11 @@ from .base import BaseModule
 
 class CoreModule(BaseModule):
     """Core module for basic server setup and deployment"""
-    
+
     name = "core"
     description = "Core server configuration and deployment"
     version = "0.1.0"
-    
+
     def get_required_imports(self) -> List[str]:
         """Get required import statements for this module"""
         return [
@@ -29,7 +30,15 @@ class CoreModule(BaseModule):
             "from pyinfra.facts.server import Which",
             "from pathlib import Path",
         ]
-    
+
+    def _is_zero_downtime(self, project_config) -> bool:
+        return getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
+
+    def _get_app_path(self, host_data, project_config) -> str:
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        app_name = getattr(host_data, 'project_name', project_config.project_name)
+        return f"/home/{app_user}/apps/{app_name}"
+
     def configure_server(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Configure basic server requirements"""
 
@@ -46,6 +55,23 @@ class CoreModule(BaseModule):
             _sudo=True,
         )
 
+        # For zero-downtime deploys, gunicorn owns the socket instead of systemd.
+        # Add www-data (nginx) to the app user's group so it can access
+        # the gunicorn-owned unix socket and static files via group permissions.
+        if self._is_zero_downtime(project_config):
+            server.shell(
+                name="Add www-data to app user group",
+                commands=[f"usermod -aG {app_user} www-data"],
+                _sudo=True,
+            )
+            # Allow group traversal of home dir so nginx (www-data) can
+            # follow symlinks to shared static/media files
+            server.shell(
+                name="Allow group traversal of app user home",
+                commands=[f"chmod 710 /home/{app_user}"],
+                _sudo=True,
+            )
+
         # Update apt repositories
         apt.update(
             name="Update apt repositories",
@@ -54,10 +80,10 @@ class CoreModule(BaseModule):
 
         # Configure ownership for HTTP challenge operations (Let's Encrypt)
         self._configure_http_challenge_sudo(ssh_user, project_config)
-        
+
         # Install Python
         self._install_python(host_data, project_config)
-        
+
         # Install Poetry
         pip.packages(
             name="Install poetry",
@@ -67,19 +93,77 @@ class CoreModule(BaseModule):
             _sudo_user=app_user,
             _use_sudo_login=True,
         )
-        
+
         # Install basic packages
         apt.packages(
             name="Install basic packages",
             packages=["git", "curl", "wget", "build-essential"],
             _sudo=True,
         )
-    
+
+        # Create external database directory if configured
+        db_dir = getattr(project_config, 'db_dir', None)
+        if db_dir:
+            resolved_db_dir = project_config.resolve_db_dir(app_user)
+            parent_dir = str(Path(resolved_db_dir).parent)
+            for directory in [parent_dir, resolved_db_dir]:
+                files.directory(
+                    name=f"Create {directory}",
+                    path=directory,
+                    user=app_user,
+                    group=app_user,
+                    _sudo=True,
+                )
+
+        # Set up zero-downtime directory structure if configured
+        if self._is_zero_downtime(project_config):
+            self._configure_zero_downtime_dirs(host_data, project_config)
+
+    def _configure_zero_downtime_dirs(self, host_data, project_config):
+        """Create the releases/, shared/, current directory structure"""
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        app_path = self._get_app_path(host_data, project_config)
+
+        apps_dir = f"/home/{app_user}/apps"
+        for directory in [apps_dir, app_path]:
+            files.directory(
+                name=f"Create {directory}",
+                path=directory,
+                user=app_user,
+                group=app_user,
+                _sudo=True,
+            )
+
+        for subdir in ["releases", "shared"]:
+            files.directory(
+                name=f"Create {subdir} directory",
+                path=f"{app_path}/{subdir}",
+                user=app_user,
+                group=app_user,
+                _sudo=True,
+            )
+
+        # Create shared resource directories (mkdir -p for nested paths)
+        shared_resources = getattr(project_config, 'shared_resources', [])
+        if shared_resources:
+            mkdir_commands = [
+                f"mkdir -p {app_path}/shared/{resource}"
+                for resource in shared_resources
+                if not resource.startswith('.')
+            ]
+            if mkdir_commands:
+                mkdir_commands.append(f"chown -R {app_user}:{app_user} {app_path}/shared")
+                server.shell(
+                    name="Create shared resource directories",
+                    commands=mkdir_commands,
+                    _sudo=True,
+                )
+
     def _install_python(self, host_data: Dict[str, Any], project_config: Dict[str, Any]):
         """Install Python based on configuration"""
-        
+
         python_version = project_config.python_version
-        
+
         if getattr(project_config, 'python_compile', False):
             self._compile_python(python_version, host_data)
         else:
@@ -93,27 +177,27 @@ class CoreModule(BaseModule):
                 ],
                 _sudo=True,
             )
-    
+
     def _compile_python(self, version: str, host_data: Dict[str, Any]):
         """Compile Python from source"""
-        
+
         # Parse version into major.minor and look up full version
         # You can customize these or get from config
         major_minor = version
-        
+
         # Map major.minor to full version (can be made configurable)
         version_map = {
             "3.11": "3.11.9",
             "3.12": "3.12.7",
             "3.13": "3.13.3",
         }
-        
+
         full_version = version_map.get(major_minor, f"{major_minor}.0")
-        
+
         python_download_url = f"https://www.python.org/ftp/python/{full_version}/Python-{full_version}.tar.xz"
         python_source_dir = f"/tmp/Python-{full_version}"
         python_install_path = f"/usr/local/bin/python{major_minor}"
-        
+
         # Check if Python is already compiled and installed
         if host.get_fact(Which, python_install_path) is None:
             # Install build dependencies
@@ -128,7 +212,7 @@ class CoreModule(BaseModule):
                 ],
                 _sudo=True,
             )
-            
+
             # Download Python source
             server.shell(
                 name=f"Download Python {full_version} source",
@@ -138,7 +222,7 @@ class CoreModule(BaseModule):
                 ],
                 _sudo=True,
             )
-            
+
             # Configure and compile Python
             server.shell(
                 name=f"Configure and compile Python {full_version}",
@@ -149,7 +233,7 @@ class CoreModule(BaseModule):
                 _chdir=python_source_dir,
                 _sudo=True,
             )
-            
+
             # Install Python using altinstall (doesn't override system python)
             server.shell(
                 name=f"Install Python {full_version} using altinstall",
@@ -159,7 +243,7 @@ class CoreModule(BaseModule):
                 _chdir=python_source_dir,
                 _sudo=True,
             )
-            
+
             # Clean up source files
             server.shell(
                 name=f"Clean up Python {full_version} source files",
@@ -175,24 +259,102 @@ class CoreModule(BaseModule):
                 commands=[f"echo 'Python {full_version} already installed.'"],
                 _sudo=False,
             )
-    
+
     def deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
         """Deploy the application"""
-        
+        if self._is_zero_downtime(project_config):
+            self._deploy_zero_downtime(host_data, project_config, artifact_path)
+        else:
+            self._deploy_in_place(host_data, project_config, artifact_path)
+
+    def post_deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
+        """Run migrations and collectstatic after all modules have deployed their files"""
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+
+        if self._is_zero_downtime(project_config):
+            # Run migrations and collectstatic via the stable build/ symlink
+            # so Poetry resolves the same virtualenv used during install.
+            # Old workers keep serving from current/ without interruption.
+            base_path = self._get_app_path(host_data, project_config)
+            build_path = f"{base_path}/build"
+            release_path = getattr(host.data, '_zero_downtime_release_path', None)
+            app_path = build_path if release_path else f"{base_path}/current"
+
+            self._run_migrations(app_user, app_path, project_config)
+            self._collect_static(app_user, app_path, project_config)
+
+            # Atomic symlink swap AFTER everything is ready.
+            # Old workers continue serving until USR2 triggers the handoff.
+            if release_path:
+                server.shell(
+                    name="Swap current symlink to new release",
+                    commands=[
+                        f"ln -sfn {release_path} {base_path}/current.tmp && mv -Tf {base_path}/current.tmp {base_path}/current",
+                    ],
+                    _sudo=True,
+                    _sudo_user=app_user,
+                    _use_sudo_login=True,
+                )
+        else:
+            app_path = self._get_app_path(host_data, project_config)
+            self._run_migrations(app_user, app_path, project_config)
+            self._collect_static(app_user, app_path, project_config)
+
+    def rollback(self, host_data: Dict[str, Any], project_config: Dict[str, Any], release: str = None):
+        """Roll back to a previous release by swapping the current symlink"""
+        import re
+
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        app_path = self._get_app_path(host_data, project_config)
+        releases_path = f"{app_path}/releases"
+
+        if release:
+            # Validate release name to prevent path traversal / shell injection
+            if not re.match(r'^[a-zA-Z0-9._-]+$', release):
+                raise ValueError(f"Invalid release name: {release}")
+            server.shell(
+                name=f"Roll back to release {release}",
+                commands=[
+                    f'test -d {releases_path}/{release} || (echo "Release {release} not found" && exit 1)',
+                    f'ln -sfn {releases_path}/{release} {app_path}/current.tmp && mv -Tf {app_path}/current.tmp {app_path}/current',
+                    f'echo "Rolled back to {release}"',
+                ],
+                _sudo=True,
+                _sudo_user=app_user,
+            )
+        else:
+            # Resolve current release from symlink, then pick the most recent
+            # release that isn't the current one.
+            # Note: use raw strings or escape $ to prevent f-string interpolation.
+            rollback_cmd = (
+                'CURR=$(basename "$(readlink -f {app}/current)") && '
+                'PREV=$(cd {rels} && ls -1t | grep -v "^$CURR$" | head -n 1) && '
+                'test -n "$PREV" || (echo "No previous release to roll back to" && exit 1) && '
+                'ln -sfn {rels}/$PREV {app}/current.tmp && mv -Tf {app}/current.tmp {app}/current && '
+                'echo "Rolled back to $PREV"'
+            ).format(app=app_path, rels=releases_path)
+            server.shell(
+                name="Roll back to previous release",
+                commands=[rollback_cmd],
+                _sudo=True,
+                _sudo_user=app_user,
+            )
+
+    def _deploy_in_place(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
+        """Deploy by overwriting in place (original behavior)"""
+
         # Get app_user from host data or fallback to project config
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
         ssh_user = getattr(host_data, 'ssh_user', 'deploy')
-        # Use host-specific project name if available, otherwise use global project name
-        app_name = getattr(host_data, 'project_name', project_config.project_name)
-        app_path = f"/home/{app_user}/apps/{app_name}"
-        
+        app_path = self._get_app_path(host_data, project_config)
+
         # Create necessary directories
         files.directory(
             name="Create tars directory",
             path=f"/home/{ssh_user}/tars",
             _sudo=False,
         )
-        
+
         files.directory(
             name="Create application directory",
             path=app_path,
@@ -200,7 +362,7 @@ class CoreModule(BaseModule):
             group=app_user,
             _sudo=True,
         )
-        
+
         # Upload artifact
         artifact_filename = artifact_path.name
         files.put(
@@ -208,7 +370,7 @@ class CoreModule(BaseModule):
             src=str(artifact_path),
             dest=f"/home/{ssh_user}/tars/{artifact_filename}",
         )
-        
+
         # Extract artifact
         server.shell(
             name="Extract artifact and set permissions",
@@ -218,27 +380,150 @@ class CoreModule(BaseModule):
             ],
             _sudo=True,
         )
-        
-        # Deploy configuration files if specified
-        # The deploy_files are part of the extracted artifact
+
+        # Deploy configuration files
+        self._deploy_config_files(host_data, project_config, app_path)
+
+        # Generate SSL certificates if enabled
+        if getattr(host_data, 'pregenerate_certificates', False):
+            self._generate_ssl_certificates(host_data, app_user)
+
+        # Install dependencies (migrations and collectstatic deferred to post_deploy)
+        self._install_dependencies(app_user, app_path, project_config)
+
+    def _deploy_zero_downtime(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
+        """Deploy using release directories and symlink swap"""
+
+        app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+        ssh_user = getattr(host_data, 'ssh_user', 'deploy')
+        app_path = self._get_app_path(host_data, project_config)
+        releases_path = f"{app_path}/releases"
+        shared_path = f"{app_path}/shared"
+
+        # Determine release name from artifact filename
+        # Artifact names are like: project.abc1234.tar.gz or project.v1.2.0.tar.gz
+        artifact_filename = artifact_path.name
+        # Extract the ref part: "project.REF.tar.gz" -> "REF"
+        parts = artifact_filename.rsplit('.tar.gz', 1)[0]  # remove .tar.gz
+        ref = parts.split('.', 1)[1] if '.' in parts else parts  # remove project name prefix
+
+        # For "local" deploys (no git ref), append a timestamp so each deploy
+        # gets its own release directory and rollback history is preserved.
+        if ref == "local":
+            ref = f"local-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        release_name = f"app-{ref}"
+        release_path = f"{releases_path}/{release_name}"
+
+        # Create tars directory and upload artifact
+        files.directory(
+            name="Create tars directory",
+            path=f"/home/{ssh_user}/tars",
+            _sudo=False,
+        )
+
+        files.put(
+            name="Upload deployment artifact",
+            src=str(artifact_path),
+            dest=f"/home/{ssh_user}/tars/{artifact_filename}",
+        )
+
+        # Create release directory and extract
+        files.directory(
+            name=f"Create release directory {release_name}",
+            path=release_path,
+            user=app_user,
+            group=app_user,
+            _sudo=True,
+        )
+
+        server.shell(
+            name=f"Extract artifact into {release_name}",
+            commands=[
+                f"tar -C {release_path} -xf /home/{ssh_user}/tars/{artifact_filename}",
+                f"chown -R {app_user}:{app_user} {release_path}",
+            ],
+            _sudo=True,
+        )
+
+        # Symlink shared resources into the release.
+        # mkdir -p the parent dir first in case the artifact doesn't contain it
+        # (e.g. shared_resources=["public/media"] needs releases/app-x/public/).
+        shared_resources = getattr(project_config, 'shared_resources', [])
+        if shared_resources:
+            symlink_commands = []
+            for resource in shared_resources:
+                parent = str(Path(resource).parent)
+                if parent and parent != '.':
+                    symlink_commands.append(f"mkdir -p {release_path}/{parent}")
+                # Remove extracted dir/file first — ln -sfn into an existing
+                # directory creates the link inside it instead of replacing it
+                symlink_commands.append(f"rm -rf {release_path}/{resource}")
+                symlink_commands.append(
+                    f"ln -sfn {shared_path}/{resource} {release_path}/{resource}"
+                )
+            server.shell(
+                name="Symlink shared resources into release",
+                commands=symlink_commands,
+                _sudo=True,
+                _sudo_user=app_user,
+                _use_sudo_login=True,
+            )
+
+        # Deploy configuration files (nginx, systemd) from the release
+        self._deploy_config_files(host_data, project_config, release_path)
+
+        # Generate SSL certificates if enabled
+        if getattr(host_data, 'pregenerate_certificates', False):
+            self._generate_ssl_certificates(host_data, app_user)
+
+        # Install deps via a stable build/ symlink so Poetry reuses the same
+        # virtualenv across releases (Poetry keys venvs by directory path).
+        # The symlink swap to current/ is deferred to post_deploy so old
+        # workers keep serving from the previous release without interruption.
+        build_link = f"{app_path}/build"
+        server.shell(
+            name="Create stable build symlink for Poetry",
+            commands=[
+                f"ln -sfn {release_path} {build_link}",
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+            _use_sudo_login=True,
+        )
+        self._install_dependencies(app_user, build_link, project_config)
+
+        # Store release path so other modules and post_deploy can access it
+        host.data._zero_downtime_release_path = release_path
+
+        # Clean up old releases
+        keep_releases = max(getattr(project_config, 'keep_releases', 5), 1)
+        server.shell(
+            name=f"Clean up old releases (keeping {keep_releases})",
+            commands=[
+                f"cd {releases_path} && ls -1t | tail -n +{keep_releases + 1} | xargs -r rm -rf --",
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+            _use_sudo_login=True,
+        )
+
+    def _deploy_config_files(self, host_data, project_config, app_path: str):
+        """Deploy configuration files (nginx, systemd) from the artifact"""
         env_name = getattr(host_data, 'env', 'production')
-        
-        # Get the relative path from project root to djaploy config dir
-        # djaploy_dir is an absolute path, we need to make it relative to project_dir
+
         if getattr(project_config, 'djaploy_dir', None) and getattr(project_config, 'project_dir', None):
             djaploy_dir = Path(project_config.djaploy_dir)
             project_dir = Path(project_config.project_dir)
-            # Get the relative path from project_dir to djaploy_dir
             try:
                 config_rel_path = djaploy_dir.relative_to(project_dir.parent)
             except ValueError:
-                # If they're not relative, use a fallback
                 config_rel_path = "infra"
         else:
             config_rel_path = "infra"
-        
+
         deploy_files_path = f"{app_path}/{config_rel_path}/deploy_files/{env_name}"
-        
+
         server.shell(
             name="Put deploy files (NGINX, systemd) in place on remote",
             commands=[
@@ -248,54 +533,54 @@ class CoreModule(BaseModule):
         )
 
         server.shell(
-            name="Clear default NGINX site and enable application sites",
+            name="Clear default NGINX sites",
             commands=[
                 "rm -f /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default",
-                "ln -fs /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
             ],
             _sudo=True,
         )
-        
-        # Generate SSL certificates if enabled
-        if getattr(host_data, 'pregenerate_certificates', False):
-            self._generate_ssl_certificates(host_data, app_user)
-        
-        # Install dependencies and run migrations
-        self._install_dependencies(app_user, app_path, project_config)
-        self._run_migrations(app_user, app_path, project_config)
-        self._collect_static(app_user, app_path, project_config)
-    
+
+        server.shell(
+            name="Enable NGINX sites",
+            commands=[
+                "for f in /etc/nginx/sites-available/*; do [ -f \"$f\" ] && ln -fs \"$f\" /etc/nginx/sites-enabled/; done",
+            ],
+            _sudo=True,
+        )
+
     def _install_dependencies(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Install Python dependencies using Poetry"""
-        
+
         # Get core module configuration
         core_config = getattr(project_config, 'module_configs', {}).get("core", {})
-        
+
         # Check Poetry-specific settings from module config
         poetry_no_root = core_config.get("poetry_no_root", True)  # Default to True for applications
         exclude_groups = core_config.get("exclude_groups", [])
-        
+
         # Build Poetry command with appropriate flags
         poetry_cmd = f"/home/{app_user}/.local/bin/poetry install"
-        
+
         if poetry_no_root:
             poetry_cmd += " --no-root"
-        
+
         if exclude_groups:
             if isinstance(exclude_groups, str):
                 exclude_groups = [exclude_groups]
             for group in exclude_groups:
                 poetry_cmd += f" --without {group}"
-        
+
         python_version = project_config.python_version
 
+        poetry_bin = f"/home/{app_user}/.local/bin/poetry"
+
         commands = [
-            # First configure Poetry to not use in-project virtualenvs on the server
-            f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
+            # Configure Poetry to not use in-project virtualenvs on the server
+            f"{poetry_bin} config virtualenvs.in-project false",
             # Ensure the virtualenv uses the configured Python version
-            f"/home/{app_user}/.local/bin/poetry env use python{python_version}",
+            f"{poetry_bin} env use python{python_version}",
         ]
-        
+
         # Optionally regenerate the lock file before installation
         poetry_lock_enabled = core_config.get("poetry_lock", False)
         poetry_lock_args = core_config.get("poetry_lock_args", None)
@@ -311,10 +596,10 @@ class CoreModule(BaseModule):
                     f" || {poetry_bin} lock --no-update"
                 )
             commands.append(lock_cmd)
-        
+
         # Finally install the dependencies
         commands.append(poetry_cmd)
-        
+
         server.shell(
             name="Install Python dependencies",
             commands=commands,
@@ -326,26 +611,26 @@ class CoreModule(BaseModule):
 
     def _run_migrations(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Run Django database migrations"""
-        
+
         manage_py = self._get_manage_py_path(app_path, project_config)
         if manage_py:
             # Get core module configuration
             core_config = getattr(project_config, 'module_configs', {}).get("core", {})
-            
+
             # Get list of databases from module config
             databases = core_config.get("databases", ["default"])
-            
+
             # Ensure databases is a list
             if isinstance(databases, str):
                 databases = [databases]
-            
+
             # Run migrations for each database
             migration_commands = []
             for db in databases:
                 migration_commands.append(
                     f"/home/{app_user}/.local/bin/poetry run python {manage_py} migrate --database={db} --noinput"
                 )
-            
+
             server.shell(
                 name="Run database migrations",
                 commands=migration_commands,
@@ -354,33 +639,37 @@ class CoreModule(BaseModule):
                 _use_sudo_login=True,
                 _chdir=app_path,
             )
-    
+
     def _collect_static(self, app_user: str, app_path: str, project_config: Dict[str, Any]):
         """Collect static files"""
-        
+
         manage_py = self._get_manage_py_path(app_path, project_config)
         if manage_py:
+            # For zero-downtime, static files are in a shared directory symlinked
+            # into each release. Don't use --clear so old hashed filenames survive
+            # across releases (browsers may still reference them during the handoff).
+            clear_flag = "" if self._is_zero_downtime(project_config) else " --clear"
             server.shell(
                 name="Collect static files",
                 commands=[
-                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} collectstatic --noinput --clear",
+                    f"/home/{app_user}/.local/bin/poetry run python {manage_py} collectstatic --noinput{clear_flag}",
                 ],
                 _sudo=True,
                 _sudo_user=app_user,
                 _use_sudo_login=True,
                 _chdir=app_path,
             )
-    
+
     def _generate_ssl_certificates(self, host_data, app_user: str):
         """Generate SSL certificates for testing/development purposes"""
-        
+
         # Install openssl if not already installed
         apt.packages(
             name="Install OpenSSL for certificate generation",
             packages=["openssl"],
             _sudo=True,
         )
-        
+
         # Create SSL directory
         files.directory(
             name="Create SSL directory",
@@ -389,7 +678,7 @@ class CoreModule(BaseModule):
             group=app_user,
             _sudo=True,
         )
-        
+
         # Generate domains to create certificates for
         domains = getattr(host_data, 'domains', [])
 
@@ -397,7 +686,7 @@ class CoreModule(BaseModule):
             # Default to app_hostname if no domains specified
             app_hostname = getattr(host_data, 'app_hostname', 'localhost')
             domains = [app_hostname]
-        
+
         for domain in domains:
             # Handle different domain formats (string, dict, or certificate object)
             if hasattr(domain, 'domains') and hasattr(domain, 'identifier'):
@@ -411,7 +700,7 @@ class CoreModule(BaseModule):
             else:
                 domain_name = str(domain)
                 alt_names = [domain_name]
-            
+
             # Create certificate and key paths
             cert_path = f"/home/{app_user}/.ssl/{domain_name}.crt"
             key_path = f"/home/{app_user}/.ssl/{domain_name}.key"

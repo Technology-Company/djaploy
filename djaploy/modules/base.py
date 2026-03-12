@@ -93,6 +93,19 @@ class BaseModule(ABC):
         """Hook called after restore"""
         pass
 
+
+    def rollback(self, host_data: Dict[str, Any], project_config: Any, release: Optional[str] = None):
+        """
+        Roll back this module's components.
+        Called during the rollback phase (zero_downtime only).
+
+        Args:
+            host_data: Host-specific configuration data
+            project_config: The project's DjaployConfig instance
+            release: Specific release to roll back to, or None for previous
+        """
+        pass
+
     def validate_config(self) -> bool:
         """Validate the module configuration"""
         return True

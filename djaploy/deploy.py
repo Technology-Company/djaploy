@@ -460,14 +460,16 @@ artifact_path = Path("{artifact_path}")
 # Run module deployments
 """
     
-    # Add module deployment calls
-    for module in modules:
-        script += f"""
-# Deploy {module.name}
+    # Run deployment phases across all modules.
+    # All pre_deploy first, then all deploy, then all post_deploy.
+    # This ensures settings files (e.g. local.py) are in place before
+    # migrations run, regardless of module ordering.
+    for phase in ["pre_deploy", "deploy", "post_deploy"]:
+        for module in modules:
+            script += f"""
+# {phase} {module.name}
 module = {module.__class__.__name__}({module.config})
-module.pre_deploy(host.data, project_config, artifact_path)
-module.deploy(host.data, project_config, artifact_path)
-module.post_deploy(host.data, project_config, artifact_path)
+module.{phase}(host.data, project_config, artifact_path)
 """
     
     return script
@@ -651,13 +653,97 @@ def _make_value_serializable(value):
         return value
 
 
+def rollback_project(config: DjaployConfig,
+                     inventory_file: str,
+                     release: Optional[str] = None,
+                     **kwargs):
+    """
+    Roll back to a previous release by swapping the current symlink and reloading services.
+
+    Args:
+        config: DjaployConfig instance
+        inventory_file: Path to the pyinfra inventory file
+        release: Specific release name to roll back to (e.g. "app-v1.2.0").
+                 If None, rolls back to the previous release.
+    """
+    config.validate()
+
+    if config.deployment_strategy != "zero_downtime":
+        raise ValueError("Rollback is only supported with deployment_strategy='zero_downtime'")
+
+    modules = load_modules(config.modules, config.module_configs)
+    processed_inventory_file = _preprocess_inventory(inventory_file)
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(_generate_rollback_script(config, modules, release))
+        script_path = f.name
+
+    try:
+        env_name = Path(inventory_file).stem
+        _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
+    finally:
+        os.unlink(script_path)
+        if processed_inventory_file != inventory_file:
+            os.unlink(processed_inventory_file)
+
+
+def _generate_rollback_script(config: DjaployConfig, modules: List, release: Optional[str] = None) -> str:
+    """Generate pyinfra rollback script that calls module.rollback() on each module"""
+
+    # Collect imports from modules
+    all_imports = set()
+    for module in modules:
+        if hasattr(module, 'get_required_imports'):
+            all_imports.update(module.get_required_imports())
+
+    script = "# Auto-generated pyinfra rollback script\n\n"
+
+    if all_imports:
+        script += "# Required imports from modules\n"
+        for import_stmt in sorted(all_imports):
+            script += f"{import_stmt}\n"
+    else:
+        script += """from pyinfra import host
+from pyinfra.operations import apt, server, pip, files, systemd
+from pyinfra.facts.server import Which
+from pathlib import Path
+"""
+
+    script += "\n# Import module implementations\n"
+    for module in modules:
+        module_path = module.__class__.__module__
+        script += f"from {module_path} import {module.__class__.__name__}\n"
+
+    release_repr = repr(release)
+    script += f"""
+# Get configuration from djaploy config
+import sys
+sys.path.insert(0, '{config.djaploy_dir}')
+from config import config as djaploy_config
+
+project_config = djaploy_config
+release = {release_repr}
+
+# Run module rollbacks
+"""
+
+    for module in modules:
+        script += f"""
+# Rollback {module.name}
+module = {module.__class__.__name__}({module.config})
+module.rollback(host.data, project_config, release)
+"""
+
+    return script
+
+
 def _run_prepare(prepare_script: Path, config: DjaployConfig):
     """Run the prepare script if it exists"""
-    
+
     # Change to project directory
     original_dir = os.getcwd()
     os.chdir(config.project_dir)
-    
+
     try:
         # Run the prepare script
         subprocess.run([sys.executable, str(prepare_script)], check=True)

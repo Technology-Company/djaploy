@@ -3,7 +3,7 @@ djaploy - Modular Django deployment system based on pyinfra
 """
 
 from .config import DjaployConfig
-from .deploy import deploy_project, configure_server, restore_from_backup
+from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project
 from .version import __version__
 
 # Versioning utilities
@@ -38,6 +38,7 @@ __all__ = [
     "DjaployConfig",
     "deploy_project",
     "configure_server",
+    "rollback_project",
     "restore_from_backup",
     "__version__",
     # Versioning
