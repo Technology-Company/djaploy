@@ -137,6 +137,39 @@ def deploy_project(config: DjaployConfig,
             os.unlink(processed_inventory_file)
 
 
+def restore_from_backup(config: DjaployConfig,
+                        inventory_file: str,
+                        restore_opts: Dict[str, Any],
+                        **kwargs):
+    """
+    Restore from backup on target servers via pyinfra.
+
+    Args:
+        config: DjaployConfig instance
+        inventory_file: Path to the target environment's inventory file
+        restore_opts: Dict with backup_host_name, date, db_only
+        **kwargs: Additional arguments
+    """
+
+    config.validate()
+
+    modules = load_modules(config.modules, config.module_configs)
+
+    processed_inventory_file = _preprocess_inventory(inventory_file)
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(_generate_restore_script(config, modules, restore_opts))
+        script_path = f.name
+
+    try:
+        env_name = Path(inventory_file).stem
+        _run_pyinfra(script_path, processed_inventory_file, data={"env": env_name})
+    finally:
+        os.unlink(script_path)
+        if processed_inventory_file != inventory_file:
+            os.unlink(processed_inventory_file)
+
+
 def _get_module_config(config: DjaployConfig, module_name: str) -> Dict[str, Any]:
     """Get module config, checking both short and full module path keys."""
     return (
@@ -437,6 +470,60 @@ module.deploy(host.data, project_config, artifact_path)
 module.post_deploy(host.data, project_config, artifact_path)
 """
     
+    return script
+
+
+def _generate_restore_script(config: DjaployConfig, modules: List,
+                             restore_opts: Dict[str, Any]) -> str:
+    """Generate pyinfra restore script"""
+
+    # Collect all unique imports from modules
+    all_imports = set()
+    for module in modules:
+        if hasattr(module, 'get_required_imports'):
+            all_imports.update(module.get_required_imports())
+
+    script = "# Auto-generated pyinfra restore script\n\n"
+
+    if all_imports:
+        script += "# Required imports from modules\n"
+        for import_stmt in sorted(all_imports):
+            script += f"{import_stmt}\n"
+    else:
+        script += """from pyinfra import host
+from pyinfra.operations import apt, server, pip, files, systemd
+from pyinfra.facts.server import Which
+from pathlib import Path
+"""
+
+    script += "\n# Import module implementations\n"
+
+    for module in modules:
+        module_path = module.__class__.__module__
+        script += f"from {module_path} import {module.__class__.__name__}\n"
+
+    script += f"""
+# Get configuration from djaploy config
+import sys
+sys.path.insert(0, '{config.djaploy_dir}')
+from config import config as djaploy_config
+
+project_config = djaploy_config
+
+restore_opts = {repr(restore_opts)}
+
+# Run module restores
+"""
+
+    for module in modules:
+        script += f"""
+# Restore {module.name}
+module = {module.__class__.__name__}({module.config})
+module.pre_restore(host.data, project_config, restore_opts)
+module.restore(host.data, project_config, restore_opts)
+module.post_restore(host.data, project_config, restore_opts)
+"""
+
     return script
 
 

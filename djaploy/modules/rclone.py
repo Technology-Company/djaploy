@@ -189,7 +189,7 @@ LOG_FILE="$LOG_DIR/backup.log"
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 DATE_FOLDER=$(date +"%Y-%m-%d")
-TEMP_BACKUP_DIR="/tmp/backup_{host_name}_${{TIMESTAMP}}"
+TEMP_BACKUP_DIR="/home/{app_user}/tmp/backup_{host_name}_${{TIMESTAMP}}"
 DB_DIR="{db_path}"
 MEDIA_DIR="{media_path}"
 REMOTE_BACKUP_PATH="${{REMOTE_NAME}}:{host_name}/${{DATE_FOLDER}}"
@@ -231,7 +231,7 @@ DATABASES=({db_array})
 for DB in "${{DATABASES[@]}}"; do
     if [ -f "$DB_DIR/$DB" ]; then
         log_message "Backing up database: $DB"
-        # Ensure parent directory exists (for paths like bostad/db.sqlite3)
+        # Ensure parent directory exists (for nested db paths)
         mkdir -p "$(dirname "$TEMP_BACKUP_DIR/$DB")"
         # Remove any existing backup file first
         rm -f "$TEMP_BACKUP_DIR/$DB"
@@ -396,6 +396,140 @@ log_message "Backup completed successfully for {host_name}"
             _sudo=True,
         )
     
+    def restore(self, host_data: Dict[str, Any], project_config: Any, restore_opts: Dict[str, Any]):
+        """Restore databases and media from rclone backup on the target server.
+
+        The target server must already have rclone configured (via deploy).
+        This method is called via pyinfra against the target server.
+
+        restore_opts:
+            backup_host_name: name of the host whose backups to restore from
+            date: backup date folder (YYYY-MM-DD)
+            db_only: if True, skip media restore
+        """
+
+        app_user = getattr(host_data, "app_user", None) or host_data.get("app_user", "app")
+        backup_config = getattr(host_data, "backup", None) or host_data.get("backup")
+        if not backup_config:
+            return
+
+        db_path = (
+            backup_config.get("db_path") if isinstance(backup_config, dict)
+            else getattr(backup_config, "db_path", None)
+        ) or f"/home/{app_user}/dbs"
+
+        media_path = (
+            backup_config.get("media_path") if isinstance(backup_config, dict)
+            else getattr(backup_config, "media_path", None)
+        ) or f"/home/{app_user}/apps/{project_config.project_name}/public/media"
+
+        backup_host_name = restore_opts.get("backup_host_name", "unknown")
+        date = restore_opts.get("date", "")
+        db_only = restore_opts.get("db_only", False)
+        services = getattr(host_data, "services", None) or host_data.get("services", [])
+
+        remote_path = f"backup:{backup_host_name}/{date}"
+        rclone_config = f"/home/{app_user}/.config/rclone/rclone.conf"
+        temp_base = f"/home/{app_user}/tmp"
+
+        # Stop application services (keep nginx running)
+        app_services = [s for s in services if s != "nginx"]
+        for svc in app_services:
+            from pyinfra.operations import systemd
+            systemd.service(
+                name=f"Stop {svc} for restore",
+                service=svc,
+                running=False,
+                _sudo=True,
+            )
+
+        # Restore databases
+        restore_db_script = f'''set -e
+mkdir -p "{temp_base}"
+TEMP_DIR=$(mktemp -d "{temp_base}/restore_XXXXXX")
+cd "$TEMP_DIR"
+
+# Find the latest dbs archive
+ARCHIVE=$(rclone lsf "{remote_path}/" --config "{rclone_config}" | grep "^dbs_backup_" | sort | tail -1)
+if [ -z "$ARCHIVE" ]; then
+    echo "ERROR: No database archive found in {remote_path}"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+echo "Downloading $ARCHIVE..."
+rclone copy "{remote_path}/$ARCHIVE" . --config "{rclone_config}"
+
+echo "Extracting $ARCHIVE..."
+tar -xzf "$ARCHIVE"
+rm "$ARCHIVE"
+
+# Copy all database files to their correct locations
+find . -type f \\( -name "*.sqlite3" -o -name "*.db" \\) | while read -r dbfile; do
+    REL_PATH="${{dbfile#./}}"
+    DEST="{db_path}/$REL_PATH"
+    mkdir -p "$(dirname "$DEST")"
+    cp "$dbfile" "$DEST"
+    echo "Restored: $REL_PATH -> $DEST"
+done
+
+rm -rf "$TEMP_DIR"
+echo "Database restore complete."
+'''
+
+        server.shell(
+            name="Restore databases from backup",
+            commands=[restore_db_script],
+            _sudo=True,
+            _sudo_user=app_user,
+            _use_sudo_login=True,
+        )
+
+        # Restore media
+        if not db_only:
+            restore_media_script = f'''set -e
+mkdir -p "{temp_base}"
+TEMP_DIR=$(mktemp -d "{temp_base}/restore_XXXXXX")
+cd "$TEMP_DIR"
+
+# Find the latest media archive
+ARCHIVE=$(rclone lsf "{remote_path}/" --config "{rclone_config}" | grep "^media_backup_" | sort | tail -1)
+if [ -z "$ARCHIVE" ]; then
+    echo "No media archive found, skipping."
+    rm -rf "$TEMP_DIR"
+    exit 0
+fi
+
+echo "Downloading $ARCHIVE..."
+rclone copy "{remote_path}/$ARCHIVE" . --config "{rclone_config}"
+
+echo "Extracting media to {media_path}..."
+mkdir -p "{media_path}"
+tar -xzf "$ARCHIVE" -C "{media_path}"
+
+rm -rf "$TEMP_DIR"
+echo "Media restore complete."
+'''
+
+            server.shell(
+                name="Restore media from backup",
+                commands=[restore_media_script],
+                _sudo=True,
+                _sudo_user=app_user,
+                _use_sudo_login=True,
+            )
+
+        # Restart application services
+        for svc in app_services:
+            from pyinfra.operations import systemd
+            systemd.service(
+                name=f"Start {svc} after restore",
+                service=svc,
+                running=True,
+                restarted=True,
+                _sudo=True,
+            )
+
     def get_required_packages(self) -> List[str]:
         """Get required system packages"""
         return ["rclone", "sqlite3"]
