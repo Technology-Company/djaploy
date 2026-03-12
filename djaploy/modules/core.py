@@ -263,13 +263,35 @@ class CoreModule(BaseModule):
     def post_deploy(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
         """Run migrations and collectstatic after all modules have deployed their files"""
         app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+
         if self._is_zero_downtime(project_config):
-            app_path = f"{self._get_app_path(host_data, project_config)}/current"
+            # Run migrations and collectstatic via the stable build/ symlink
+            # so Poetry resolves the same virtualenv used during install.
+            # Old workers keep serving from current/ without interruption.
+            base_path = self._get_app_path(host_data, project_config)
+            build_path = f"{base_path}/build"
+            release_path = getattr(host.data, '_zero_downtime_release_path', None)
+            app_path = build_path if release_path else f"{base_path}/current"
+
+            self._run_migrations(app_user, app_path, project_config)
+            self._collect_static(app_user, app_path, project_config)
+
+            # Atomic symlink swap AFTER everything is ready.
+            # Old workers continue serving until USR2 triggers the handoff.
+            if release_path:
+                server.shell(
+                    name="Swap current symlink to new release",
+                    commands=[
+                        f"ln -sfn {release_path} {base_path}/current.tmp && mv -Tf {base_path}/current.tmp {base_path}/current",
+                    ],
+                    _sudo=True,
+                    _sudo_user=app_user,
+                    _use_sudo_login=True,
+                )
         else:
             app_path = self._get_app_path(host_data, project_config)
-
-        self._run_migrations(app_user, app_path, project_config)
-        self._collect_static(app_user, app_path, project_config)
+            self._run_migrations(app_user, app_path, project_config)
+            self._collect_static(app_user, app_path, project_config)
 
     def rollback(self, host_data: Dict[str, Any], project_config: Dict[str, Any], release: str = None):
         """Roll back to a previous release by swapping the current symlink"""
@@ -437,27 +459,24 @@ class CoreModule(BaseModule):
         if getattr(host_data, 'pregenerate_certificates', False):
             self._generate_ssl_certificates(host_data, app_user)
 
-        # Atomic symlink swap BEFORE installing deps so Poetry sees a stable
-        # path (current/) and reuses the same virtualenv across releases.
-        # Use mv -Tf for a truly atomic swap (ln -sfn unlinks then creates,
-        # leaving a brief window where current doesn't exist).
+        # Install deps via a stable build/ symlink so Poetry reuses the same
+        # virtualenv across releases (Poetry keys venvs by directory path).
+        # The symlink swap to current/ is deferred to post_deploy so old
+        # workers keep serving from the previous release without interruption.
+        build_link = f"{app_path}/build"
         server.shell(
-            name=f"Swap current symlink to {release_name}",
+            name="Create stable build symlink for Poetry",
             commands=[
-                f"ln -sfn {release_path} {app_path}/current.tmp && mv -Tf {app_path}/current.tmp {app_path}/current",
+                f"ln -sfn {release_path} {build_link}",
             ],
             _sudo=True,
             _sudo_user=app_user,
             _use_sudo_login=True,
         )
+        self._install_dependencies(app_user, build_link, project_config)
 
-        # Install deps via the stable current/ path.
-        # Poetry keys virtualenvs by directory — using current/ means it
-        # reuses the same venv across deploys (shared venv behavior).
-        # Migrations and collectstatic are deferred to post_deploy so that
-        # other modules (e.g. local_settings) can place config files first.
-        current_path = f"{app_path}/current"
-        self._install_dependencies(app_user, current_path, project_config)
+        # Store release path so other modules and post_deploy can access it
+        host.data._zero_downtime_release_path = release_path
 
         # Clean up old releases
         keep_releases = getattr(project_config, 'keep_releases', 5)
@@ -535,11 +554,13 @@ class CoreModule(BaseModule):
 
         python_version = project_config.python_version
 
+        poetry_bin = f"/home/{app_user}/.local/bin/poetry"
+
         commands = [
-            # First configure Poetry to not use in-project virtualenvs on the server
-            f"/home/{app_user}/.local/bin/poetry config virtualenvs.in-project false",
+            # Configure Poetry to not use in-project virtualenvs on the server
+            f"{poetry_bin} config virtualenvs.in-project false",
             # Ensure the virtualenv uses the configured Python version
-            f"/home/{app_user}/.local/bin/poetry env use python{python_version}",
+            f"{poetry_bin} env use python{python_version}",
         ]
 
         # Optionally regenerate the lock file before installation
