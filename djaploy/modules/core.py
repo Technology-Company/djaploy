@@ -68,7 +68,7 @@ class CoreModule(BaseModule):
             # follow symlinks to shared static/media files
             server.shell(
                 name="Allow group traversal of app user home",
-                commands=[f"chmod 710 /home/{app_user}"],
+                commands=[f"chmod 711 /home/{app_user}"],
                 _sudo=True,
             )
 
