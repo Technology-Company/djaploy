@@ -325,16 +325,18 @@ class CoreModule(BaseModule):
             )
         else:
             # Resolve current release from symlink, then pick the most recent
-            # release that isn't the current one
+            # release that isn't the current one.
+            # Note: use raw strings or escape $ to prevent f-string interpolation.
+            rollback_cmd = (
+                'CURR=$(basename "$(readlink -f {app}/current)") && '
+                'PREV=$(cd {rels} && ls -1t | grep -v "^$CURR$" | head -n 1) && '
+                'test -n "$PREV" || (echo "No previous release to roll back to" && exit 1) && '
+                'ln -sfn {rels}/$PREV {app}/current.tmp && mv -Tf {app}/current.tmp {app}/current && '
+                'echo "Rolled back to $PREV"'
+            ).format(app=app_path, rels=releases_path)
             server.shell(
                 name="Roll back to previous release",
-                commands=[
-                    f'CURR=$(basename "$(readlink -f {app_path}/current)") && '
-                    f'PREV=$(cd {releases_path} && ls -1t | grep -v "^$CURR$" | head -n 1) && '
-                    f'test -n "$PREV" || (echo "No previous release to roll back to" && exit 1) && '
-                    f'ln -sfn {releases_path}/$PREV {app_path}/current.tmp && mv -Tf {app_path}/current.tmp {app_path}/current && '
-                    f'echo "Rolled back to $PREV"',
-                ],
+                commands=[rollback_cmd],
                 _sudo=True,
                 _sudo_user=app_user,
                 _use_sudo_login=True,
