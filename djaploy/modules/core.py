@@ -321,7 +321,6 @@ class CoreModule(BaseModule):
                 ],
                 _sudo=True,
                 _sudo_user=app_user,
-                _use_sudo_login=True,
             )
         else:
             # Resolve current release from symlink, then pick the most recent
@@ -339,7 +338,6 @@ class CoreModule(BaseModule):
                 commands=[rollback_cmd],
                 _sudo=True,
                 _sudo_user=app_user,
-                _use_sudo_login=True,
             )
 
     def _deploy_in_place(self, host_data: Dict[str, Any], project_config: Dict[str, Any], artifact_path: Path):
