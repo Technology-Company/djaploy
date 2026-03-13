@@ -133,12 +133,17 @@ After=network.target
 Type=simple
 User=app
 WorkingDirectory=/home/app/apps/myapp
-ExecStart=/home/app/.local/bin/poetry run gunicorn config.wsgi
+ExecStart=/home/app/.local/bin/poetry run gunicorn --chdir /home/app/apps/myapp/current config.wsgi
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Note:** The `--chdir` flag is important for zero-downtime deployments. Without it,
+> gunicorn resolves the `current` symlink once at startup and all forked workers
+> (including after USR2 reload) continue using the old release directory. With `--chdir`,
+> gunicorn re-evaluates the symlink path when the new master starts.
 
 ## Usage
 

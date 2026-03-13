@@ -168,7 +168,11 @@ class Command(BaseCommand):
                     self.stdout.write(f"  • {filename}: Found")
                 elif self.verbose:
                     self.stdout.write(self.style.WARNING(f"  • {filename}: Not found (may not be required)"))
-                    
+
+            # Check gunicorn service files for --chdir when using zero-downtime
+            if getattr(config, 'deployment_strategy', 'in_place') == 'zero_downtime':
+                self._check_gunicorn_chdir(deploy_files_dir)
+
         else:
             self.warnings.append(f"Deploy files directory does not exist: {deploy_files_dir}")
             self.stdout.write(self.style.WARNING(f"  ⚠ Deploy files directory does not exist: {deploy_files_dir}"))
@@ -176,6 +180,27 @@ class Command(BaseCommand):
             
         self.stdout.write("")
         
+    def _check_gunicorn_chdir(self, deploy_files_dir):
+        """Warn if gunicorn service files lack --chdir for zero-downtime deploys"""
+        service_files = list(deploy_files_dir.rglob("*.service"))
+        for service_file in service_files:
+            try:
+                content = service_file.read_text()
+            except OSError:
+                continue
+            # Look for gunicorn in ExecStart lines
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("ExecStart") and "gunicorn" in stripped and "--chdir" not in stripped:
+                    rel_path = service_file.relative_to(deploy_files_dir)
+                    msg = (
+                        f"Gunicorn in {rel_path} is missing --chdir. "
+                        "Without it, USR2 reloads will keep serving the old release "
+                        "because gunicorn resolves the symlink only once at startup."
+                    )
+                    self.warnings.append(msg)
+                    self.stdout.write(self.style.WARNING(f"  ⚠ {msg}"))
+
     def check_inventory(self, config):
         """Check inventory configuration"""
         self.stdout.write(self.style.HTTP_INFO("4. Inventory"))
