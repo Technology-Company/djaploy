@@ -132,13 +132,21 @@ After=network.target
 [Service]
 Type=simple
 User=app
-WorkingDirectory=/home/app/apps/myapp
-ExecStart=/home/app/.local/bin/poetry run gunicorn config.wsgi
+WorkingDirectory=/home/app/apps/myapp/current
+ExecStart=/home/app/.local/bin/poetry run gunicorn config.wsgi --chdir /home/app/apps/myapp/current
+ExecReload=/bin/kill -s USR2 $MAINPID
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Zero-downtime note:** `WorkingDirectory` points to the `current/` symlink so
+> `systemctl start` resolves it to the active release. `--chdir` is required so
+> that when gunicorn re-execs after USR2 (`systemctl reload`), it re-resolves the
+> symlink to the **new** release — without it the forked master inherits the old
+> working directory inode and loads stale code. For `in_place` deploys neither
+> `current/` nor `--chdir` are needed.
 
 ## Usage
 
