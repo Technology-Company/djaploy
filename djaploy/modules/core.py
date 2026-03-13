@@ -473,29 +473,19 @@ class CoreModule(BaseModule):
         # Deploy configuration files (nginx, systemd) from the release
         self._deploy_config_files(host_data, project_config, release_path)
 
+        # Patch gunicorn ExecStart with --chdir so USR2 reload picks up new code.
+        # When gunicorn re-execs after USR2, it re-parses its saved command-line
+        # args.  --chdir causes it to os.chdir() to the current/ symlink, which
+        # re-resolves to the new release — overriding the stale working directory
+        # inode inherited from the old master.
+        # The service file is freshly copied from the release on every deploy,
+        # so --chdir never accumulates.
+        current_path = f"{app_path}/current"
+        self._patch_gunicorn_chdir(host_data, current_path)
+
         # Generate SSL certificates if enabled
         if getattr(host_data, 'pregenerate_certificates', False):
             self._generate_ssl_certificates(host_data, app_user)
-
-        # Write a gunicorn config that sets chdir to the current/ symlink.
-        # When gunicorn re-execs after USR2 (reload), the new master inherits
-        # the old master's working directory *inode* — which still points to the
-        # previous release even after the symlink swap.  By setting chdir in the
-        # config inside the release, and having the systemd service reference it
-        # via current/ (e.g. gunicorn -c .../current/gunicorn_chdir.conf.py),
-        # the re-exec'd process re-reads the config from the new release and
-        # re-resolves the current/ symlink to pick up the new code.
-        current_path = f"{app_path}/current"
-        gunicorn_conf = f"{release_path}/gunicorn_chdir.conf.py"
-        server.shell(
-            name="Write gunicorn chdir config for zero-downtime reload",
-            commands=[
-                f"echo 'chdir = \"{current_path}\"' > {gunicorn_conf}",
-            ],
-            _sudo=True,
-            _sudo_user=app_user,
-            _use_sudo_login=True,
-        )
 
         # Install deps via a stable build/ symlink so Poetry reuses the same
         # virtualenv across releases (Poetry keys venvs by directory path).
@@ -565,6 +555,33 @@ class CoreModule(BaseModule):
             commands=[
                 "for f in /etc/nginx/sites-available/*; do [ -f \"$f\" ] && ln -fs \"$f\" /etc/nginx/sites-enabled/; done",
             ],
+            _sudo=True,
+        )
+
+    def _patch_gunicorn_chdir(self, host_data, current_path: str):
+        """Append --chdir to gunicorn ExecStart lines in deployed service files.
+
+        After USR2, gunicorn re-execs and re-parses its command-line args.
+        --chdir makes it os.chdir() to the current/ symlink, which resolves
+        to the new release — overriding the stale cwd inode from the old master.
+        """
+        services = getattr(host_data, 'services', [])
+        if not services:
+            return
+
+        # Build a single sed command that patches all service files at once.
+        # Only lines starting with ExecStart= that contain "gunicorn" are touched.
+        sed_cmds = []
+        for service in services:
+            svc_file = f"/etc/systemd/system/{service}.service"
+            sed_cmds.append(
+                f"test -f {svc_file} && "
+                f"sed -i '/^ExecStart=.*gunicorn/ s|$| --chdir {current_path}|' {svc_file} || true"
+            )
+
+        server.shell(
+            name="Patch gunicorn ExecStart with --chdir for zero-downtime reload",
+            commands=sed_cmds,
             _sudo=True,
         )
 
