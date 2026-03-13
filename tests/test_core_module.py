@@ -201,6 +201,13 @@ class TestZeroDowntimeDeployFlow(unittest.TestCase):
                          if "Clean up old releases" in str(c)]
         self.assertTrue(len(cleanup_calls) > 0, "Should clean up old releases")
 
+        # Verify gunicorn chdir config is written so USR2 reload re-resolves
+        # the current/ symlink to the new release
+        chdir_calls = [c for c in server.shell.call_args_list
+                       if "gunicorn chdir config" in str(c)]
+        self.assertTrue(len(chdir_calls) > 0,
+                        "Should write gunicorn_chdir.conf.py for zero-downtime reload")
+
     @patch.object(CoreModule, '_collect_static')
     @patch.object(CoreModule, '_run_migrations')
     @patch.object(CoreModule, '_install_dependencies')

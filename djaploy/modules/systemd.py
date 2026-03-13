@@ -13,16 +13,16 @@ from .base import BaseModule
 
 class SystemdModule(BaseModule):
     """Module for managing systemd services"""
-    
+
     name = "systemd"
     description = "Systemd service configuration and management"
     version = "0.1.0"
-    
+
     def configure_server(self, host_data: Dict[str, Any], project_config: Any):
         """Configure systemd for the application"""
         # Configuration happens during deploy when we have the service files
         pass
-    
+
     def deploy(self, host_data: Dict[str, Any], project_config: Any, artifact_path: Path):
         """Deploy systemd service files and reload daemon"""
 
@@ -42,17 +42,24 @@ class SystemdModule(BaseModule):
 
         for service in getattr(host_data, "services", []):
             if zero_downtime:
-                # Restart the service so the new process resolves the current/
-                # symlink to the new release directory.  A simple reload (USR2)
-                # would fork a new master that inherits the old master's working
-                # directory *inode*, meaning it would still load code from the
-                # previous release even though the symlink has been swapped.
+                # Ensure service is running and enabled first
                 systemd.service(
-                    name=f"Restart and enable {service} (zero-downtime)",
+                    name=f"Start and enable {service}",
                     service=service,
                     running=True,
                     enabled=True,
-                    restarted=True,
+                    _sudo=True,
+                )
+                # Reload sends USR2 — gunicorn forks a new master that re-execs
+                # itself.  The re-exec'd process picks up --chdir from the
+                # gunicorn config written by the core module, which points to the
+                # current/ symlink.  This re-resolves the symlink to the new
+                # release so the new master loads updated code, while the old
+                # master gracefully shuts down (true zero-downtime handoff).
+                systemd.service(
+                    name=f"Reload {service} (zero-downtime)",
+                    service=service,
+                    reloaded=True,
                     _sudo=True,
                 )
             else:
@@ -74,16 +81,16 @@ class SystemdModule(BaseModule):
                 enabled=True,
                 _sudo=True,
             )
-    
+
     def rollback(self, host_data: Dict[str, Any], project_config: Any, release: str = None):
-        """Restart services after a rollback so they pick up the rolled-back code"""
+        """Reload services after a rollback (USR2 for zero-downtime)"""
         zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
         for service in getattr(host_data, "services", []):
             if zero_downtime:
                 systemd.service(
-                    name=f"Restart {service} after rollback",
+                    name=f"Reload {service} after rollback",
                     service=service,
-                    restarted=True,
+                    reloaded=True,
                     _sudo=True,
                 )
             else:

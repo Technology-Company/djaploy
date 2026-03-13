@@ -143,6 +143,19 @@ class CoreModule(BaseModule):
                 _sudo=True,
             )
 
+        # Write gunicorn chdir config so USR2 reload re-resolves the current/ symlink.
+        # Users should reference this with: gunicorn -c /path/to/gunicorn_chdir.conf.py ...
+        current_path = f"{app_path}/current"
+        gunicorn_conf = f"{app_path}/gunicorn_chdir.conf.py"
+        server.shell(
+            name="Write gunicorn chdir config for zero-downtime reload",
+            commands=[
+                f"echo 'chdir = \"{current_path}\"' > {gunicorn_conf}",
+                f"chown {app_user}:{app_user} {gunicorn_conf}",
+            ],
+            _sudo=True,
+        )
+
         # Create shared resource directories (mkdir -p for nested paths)
         shared_resources = getattr(project_config, 'shared_resources', [])
         if shared_resources:
@@ -476,6 +489,24 @@ class CoreModule(BaseModule):
         # Generate SSL certificates if enabled
         if getattr(host_data, 'pregenerate_certificates', False):
             self._generate_ssl_certificates(host_data, app_user)
+
+        # Write a gunicorn config that sets chdir to the current/ symlink.
+        # When gunicorn re-execs after USR2 (reload), the new master inherits
+        # the old master's working directory *inode* — which still points to the
+        # previous release even after the symlink swap.  By setting chdir in the
+        # gunicorn config, the re-exec'd process re-resolves the current/ symlink
+        # and picks up the new release code.
+        current_path = f"{app_path}/current"
+        gunicorn_conf = f"{app_path}/gunicorn_chdir.conf.py"
+        server.shell(
+            name="Write gunicorn chdir config for zero-downtime reload",
+            commands=[
+                f"echo 'chdir = \"{current_path}\"' > {gunicorn_conf}",
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+            _use_sudo_login=True,
+        )
 
         # Install deps via a stable build/ symlink so Poetry reuses the same
         # virtualenv across releases (Poetry keys venvs by directory path).
