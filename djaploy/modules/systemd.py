@@ -42,21 +42,17 @@ class SystemdModule(BaseModule):
 
         for service in getattr(host_data, "services", []):
             if zero_downtime:
-                # Reload sends USR2 — gunicorn forks a new master that re-reads
-                # code via the current/ symlink, spawns new workers, then the old
-                # master gracefully shuts down. Requires gunicorn to own its socket
-                # (not systemd socket activation).
+                # Restart the service so the new process resolves the current/
+                # symlink to the new release directory.  A simple reload (USR2)
+                # would fork a new master that inherits the old master's working
+                # directory *inode*, meaning it would still load code from the
+                # previous release even though the symlink has been swapped.
                 systemd.service(
-                    name=f"Start and enable {service}",
+                    name=f"Restart and enable {service} (zero-downtime)",
                     service=service,
                     running=True,
                     enabled=True,
-                    _sudo=True,
-                )
-                systemd.service(
-                    name=f"Reload {service} (zero-downtime)",
-                    service=service,
-                    reloaded=True,
+                    restarted=True,
                     _sudo=True,
                 )
             else:
@@ -80,14 +76,14 @@ class SystemdModule(BaseModule):
             )
     
     def rollback(self, host_data: Dict[str, Any], project_config: Any, release: str = None):
-        """Reload services after a rollback (USR2 for zero-downtime)"""
+        """Restart services after a rollback so they pick up the rolled-back code"""
         zero_downtime = getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
         for service in getattr(host_data, "services", []):
             if zero_downtime:
                 systemd.service(
-                    name=f"Reload {service} after rollback",
+                    name=f"Restart {service} after rollback",
                     service=service,
-                    reloaded=True,
+                    restarted=True,
                     _sudo=True,
                 )
             else:

@@ -184,16 +184,17 @@ class TestZeroDowntimeDeployFlow(unittest.TestCase):
                          if "Symlink shared resources" in str(c)]
         self.assertTrue(len(symlink_calls) > 0, "Should create shared resource symlinks")
 
-        # Verify symlink swap happened
-        swap_calls = [c for c in server.shell.call_args_list
-                      if "Swap current symlink" in str(c)]
-        self.assertTrue(len(swap_calls) > 0, "Should swap the current symlink")
-
-        # Verify deps are installed via current/ path (not release path)
+        # Verify deps are installed via the stable build/ symlink so Poetry
+        # reuses the same virtualenv across releases
         mock_deps.assert_called_once()
         install_path = mock_deps.call_args[0][1]  # second positional arg is app_path
-        self.assertIn("/current", install_path,
-                      "Dependencies should be installed via the current/ symlink path")
+        self.assertIn("/build", install_path,
+                      "Dependencies should be installed via the build/ symlink path")
+
+        # Verify build symlink is created pointing to the release
+        build_calls = [c for c in server.shell.call_args_list
+                       if "stable build symlink" in str(c)]
+        self.assertTrue(len(build_calls) > 0, "Should create stable build symlink for Poetry")
 
         # Verify cleanup runs
         cleanup_calls = [c for c in server.shell.call_args_list

@@ -46,30 +46,32 @@ class TestSystemdModuleZeroDowntime(unittest.TestCase):
     def test_in_place_uses_restarted(self):
         config = _make_config(deployment_strategy="in_place")
         host_data = _make_host_data(services=["myapp_api"])
-        self.module.deploy(host_data, config, Path("/tmp/art.tar.gz"))
+        self.module.post_deploy(host_data, config, Path("/tmp/art.tar.gz"))
 
         # Should have restarted=True
         service_calls = systemd.service.call_args_list
         restart_calls = [c for c in service_calls if c.kwargs.get("restarted") is True]
         self.assertTrue(len(restart_calls) > 0, "in_place should use restarted=True")
 
-    def test_zero_downtime_uses_reloaded(self):
+    def test_zero_downtime_uses_restarted(self):
         config = _make_config(deployment_strategy="zero_downtime")
         host_data = _make_host_data(services=["myapp_api"])
-        self.module.deploy(host_data, config, Path("/tmp/art.tar.gz"))
+        self.module.post_deploy(host_data, config, Path("/tmp/art.tar.gz"))
 
-        # Should have reloaded=True (USR2) and NOT restarted=True
+        # Should use restarted=True (full restart) so the new process resolves
+        # the current/ symlink to the new release directory.  A reload (USR2)
+        # would fork a new master that inherits the old working directory inode.
         service_calls = systemd.service.call_args_list
-        reload_calls = [c for c in service_calls if c.kwargs.get("reloaded") is True]
         restart_calls = [c for c in service_calls if c.kwargs.get("restarted") is True]
-        self.assertTrue(len(reload_calls) > 0, "zero_downtime should use reloaded=True")
-        self.assertEqual(len(restart_calls), 0, "zero_downtime should NOT use restarted=True")
+        reload_calls = [c for c in service_calls if c.kwargs.get("reloaded") is True]
+        self.assertTrue(len(restart_calls) > 0, "zero_downtime should use restarted=True")
+        self.assertEqual(len(reload_calls), 0, "zero_downtime should NOT use reloaded=True")
 
     def test_timer_services_always_started(self):
         """Timer services don't need reload/restart distinction"""
         config = _make_config(deployment_strategy="zero_downtime")
         host_data = _make_host_data(services=[], timer_services=["cleanup"])
-        self.module.deploy(host_data, config, Path("/tmp/art.tar.gz"))
+        self.module.post_deploy(host_data, config, Path("/tmp/art.tar.gz"))
 
         timer_calls = [c for c in systemd.service.call_args_list
                        if "cleanup.timer" in str(c)]
@@ -88,26 +90,26 @@ class TestSystemdModuleRollback(unittest.TestCase):
         self.module = SystemdModule()
         systemd.service.reset_mock()
 
-    def test_rollback_reloads_services(self):
+    def test_rollback_restarts_services(self):
         config = _make_config(deployment_strategy="zero_downtime")
         host_data = _make_host_data(services=["myapp_api", "myapp_worker"])
 
         self.module.rollback(host_data, config, release=None)
 
-        # Should reload each service
-        reload_calls = [c for c in systemd.service.call_args_list
-                        if c.kwargs.get("reloaded") is True]
-        self.assertEqual(len(reload_calls), 2)
+        # Should restart each service so new processes resolve current/ symlink
+        restart_calls = [c for c in systemd.service.call_args_list
+                         if c.kwargs.get("restarted") is True]
+        self.assertEqual(len(restart_calls), 2)
 
-    def test_rollback_does_not_restart(self):
+    def test_rollback_does_not_reload(self):
         config = _make_config(deployment_strategy="zero_downtime")
         host_data = _make_host_data(services=["myapp_api"])
 
         self.module.rollback(host_data, config, release=None)
 
-        restart_calls = [c for c in systemd.service.call_args_list
-                         if c.kwargs.get("restarted") is True]
-        self.assertEqual(len(restart_calls), 0)
+        reload_calls = [c for c in systemd.service.call_args_list
+                        if c.kwargs.get("reloaded") is True]
+        self.assertEqual(len(reload_calls), 0)
 
     def test_rollback_with_no_services(self):
         config = _make_config(deployment_strategy="zero_downtime")
