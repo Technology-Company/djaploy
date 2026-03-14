@@ -85,7 +85,7 @@ def _generate_tailscale_certs(host_data, project_config):
             )
 
 
-@deploy_hook("deploy:pre")
+@deploy_hook("deploy:configure")
 def deploy_tailscale_certificates(host_data, project_config, artifact_path):
     """Generate Tailscale certificates during deploy."""
     _generate_tailscale_certs(host_data, project_config)

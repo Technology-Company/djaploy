@@ -266,33 +266,39 @@ class TestDjaployAppDiscovery(unittest.TestCase):
 
             hook_names = _registry.get_hook_names()
             self.assertIn("configure", hook_names)
+            self.assertIn("deploy:upload", hook_names)
+            self.assertIn("deploy:configure", hook_names)
             self.assertIn("deploy:pre", hook_names)
-            self.assertIn("deploy", hook_names)
-            self.assertIn("deploy:post", hook_names)
+            self.assertIn("deploy:start", hook_names)
             self.assertIn("rollback", hook_names)
 
-            # Verify core app hooks are discovered
+            # configure — server setup
             configure_hooks = _registry.get_remote_hooks("configure")
             configure_names = [h.function.__name__ for h in configure_hooks]
             self.assertIn("configure_server", configure_names)
 
-            # deploy:pre — upload, extract, configs, daemon-reload
+            # deploy:upload — upload and extract artifact
+            upload_hooks = _registry.get_remote_hooks("deploy:upload")
+            upload_names = [h.function.__name__ for h in upload_hooks]
+            self.assertIn("upload_artifact", upload_names)
+
+            # deploy:configure — deps, configs, SSL, daemon-reload
+            config_hooks = _registry.get_remote_hooks("deploy:configure")
+            config_names = [h.function.__name__ for h in config_hooks]
+            self.assertIn("configure_application", config_names)
+            self.assertIn("deploy_nginx", config_names)
+            self.assertIn("reload_systemd_daemon", config_names)
+
+            # deploy:pre — migrations, collectstatic, symlink swap
             pre_hooks = _registry.get_remote_hooks("deploy:pre")
             pre_names = [h.function.__name__ for h in pre_hooks]
-            self.assertIn("deploy_application", pre_names)
-            self.assertIn("deploy_nginx", pre_names)
-            self.assertIn("reload_systemd_daemon", pre_names)
+            self.assertIn("activate_release", pre_names)
 
-            # deploy — migrations, collectstatic, symlink swap
-            deploy_hooks = _registry.get_remote_hooks("deploy")
-            deploy_names = [h.function.__name__ for h in deploy_hooks]
-            self.assertIn("post_deploy", deploy_names)
-
-            # deploy:post — reload services
-            post_hooks = _registry.get_remote_hooks("deploy:post")
-            post_names = [h.function.__name__ for h in post_hooks]
-            self.assertIn("reload_nginx", post_names)
-            self.assertIn("start_services", post_names)
+            # deploy:start — reload/restart services
+            start_hooks = _registry.get_remote_hooks("deploy:start")
+            start_names = [h.function.__name__ for h in start_hooks]
+            self.assertIn("reload_nginx", start_names)
+            self.assertIn("start_services", start_names)
 
             # Verify rollback hook
             rollback_hooks = _registry.get_remote_hooks("rollback")

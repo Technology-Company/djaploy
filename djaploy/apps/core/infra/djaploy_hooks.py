@@ -124,15 +124,12 @@ def configure_server(host_data, project_config):
                 )
 
 
-@deploy_hook("deploy:pre")
-def deploy_application(host_data, project_config, artifact_path):
-    """Upload artifact, extract, install deps, deploy configs."""
+@deploy_hook("deploy:upload")
+def upload_artifact(host_data, project_config, artifact_path):
+    """Upload artifact, extract, and symlink shared resources."""
     from pyinfra import host
     from pyinfra.operations import server, files
-    from djaploy.apps.core.infra.utils import (
-        is_zero_downtime, get_app_path, deploy_config_files,
-        generate_ssl_certificates, install_dependencies,
-    )
+    from djaploy.apps.core.infra.utils import is_zero_downtime, get_app_path
     from pathlib import Path
     from datetime import datetime
 
@@ -207,25 +204,17 @@ def deploy_application(host_data, project_config, artifact_path):
                 _use_sudo_login=True,
             )
 
-        # Deploy configuration files
-        deploy_config_files(host_data, project_config, release_path)
-
-        # Generate SSL certificates if enabled
-        if getattr(host_data, 'pregenerate_certificates', False):
-            generate_ssl_certificates(host_data, app_user)
-
-        # Install deps via a stable build/ symlink
+        # Create stable build symlink (used by configure and pre phases)
         build_link = f"{app_path}/build"
         server.shell(
-            name="Create stable build symlink for Poetry",
+            name="Create stable build symlink",
             commands=[f"ln -sfn {release_path} {build_link}"],
             _sudo=True,
             _sudo_user=app_user,
             _use_sudo_login=True,
         )
-        install_dependencies(app_user, build_link, project_config)
 
-        # Store release path for post_deploy
+        # Store release path for later phases
         host.data._zero_downtime_release_path = release_path
 
         # Clean up old releases
@@ -268,16 +257,61 @@ def deploy_application(host_data, project_config, artifact_path):
             _sudo=True,
         )
 
-        deploy_config_files(host_data, project_config, app_path)
 
-        if getattr(host_data, 'pregenerate_certificates', False):
-            generate_ssl_certificates(host_data, app_user)
+@deploy_hook("deploy:configure")
+def configure_application(host_data, project_config, artifact_path):
+    """Deploy config files, SSL certs, and install dependencies."""
+    from djaploy.apps.core.infra.utils import (
+        is_zero_downtime, get_app_path, deploy_config_files,
+        generate_ssl_certificates, install_dependencies,
+    )
 
-        install_dependencies(app_user, app_path, project_config)
+    app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+    app_path = get_app_path(host_data, project_config)
+
+    if is_zero_downtime(project_config):
+        target_path = f"{app_path}/build"
+    else:
+        target_path = app_path
+
+    deploy_config_files(host_data, project_config, target_path)
+
+    if getattr(host_data, 'pregenerate_certificates', False):
+        generate_ssl_certificates(host_data, app_user)
+
+    install_dependencies(app_user, target_path, project_config)
 
 
-@deploy_hook("deploy")
-def post_deploy(host_data, project_config, artifact_path):
+@deploy_hook("deploy:configure")
+def inject_local_settings(host_data, project_config, artifact_path):
+    """Append hook-contributed local_settings to local.py."""
+    from pyinfra.operations import server
+    from djaploy.apps.core.infra.utils import is_zero_downtime, get_app_path
+
+    local_settings_b64 = getattr(host_data, "local_settings_b64", None)
+    if not local_settings_b64:
+        return
+
+    app_user = getattr(host_data, "app_user", None) or project_config.app_user
+    app_path = get_app_path(host_data, project_config)
+    project_name = project_config.project_name
+
+    if is_zero_downtime(project_config):
+        base_path = f"{app_path}/build"
+    else:
+        base_path = app_path
+
+    local_py = f"{base_path}/{project_name}/local.py"
+    server.shell(
+        name="Append hook-contributed settings to local.py",
+        commands=[f"printf '%s' '{local_settings_b64}' | base64 -d >> {local_py}"],
+        _sudo=True,
+        _sudo_user=app_user,
+    )
+
+
+@deploy_hook("deploy:pre")
+def activate_release(host_data, project_config, artifact_path):
     """Run migrations, collectstatic, and swap symlink (zero-downtime)."""
     from pyinfra import host
     from pyinfra.operations import server

@@ -7,7 +7,7 @@ Reloads the systemd daemon and manages services during deployment lifecycle.
 from djaploy.hooks import deploy_hook
 
 
-@deploy_hook("deploy:pre")
+@deploy_hook("deploy:configure")
 def reload_systemd_daemon(host_data, project_config, artifact_path):
     """Reload systemd daemon to pick up new service files."""
     from pyinfra.operations import systemd
@@ -18,7 +18,7 @@ def reload_systemd_daemon(host_data, project_config, artifact_path):
     )
 
 
-@deploy_hook("deploy:post")
+@deploy_hook("deploy:start")
 def start_services(host_data, project_config, artifact_path):
     """Start or restart application services after deploy."""
     from pyinfra.operations import systemd

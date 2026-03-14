@@ -30,7 +30,7 @@ def configure_nginx(host_data, project_config):
         )
 
 
-@deploy_hook("deploy:pre")
+@deploy_hook("deploy:configure")
 def deploy_nginx(host_data, project_config, artifact_path):
     """Deploy NGINX configuration files and SSL certificates."""
     from pyinfra.operations import server, files
@@ -75,7 +75,7 @@ def deploy_nginx(host_data, project_config, artifact_path):
     )
 
 
-@deploy_hook("deploy:post")
+@deploy_hook("deploy:start")
 def reload_nginx(host_data, project_config, artifact_path):
     """Reload NGINX after all deploy hooks have run."""
     from pyinfra.operations import systemd
