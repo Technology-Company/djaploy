@@ -1,0 +1,72 @@
+# Target server for local djaploy testing.
+# Uses systemd as init so djaploy's systemd hooks work correctly.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV container=docker
+
+# Install systemd and remove unnecessary units
+RUN apt-get update && apt-get install -y systemd systemd-sysv \
+    && rm -f /lib/systemd/system/multi-user.target.wants/* \
+    && rm -f /etc/systemd/system/*.wants/* \
+    && rm -f /lib/systemd/system/local-fs.target.wants/* \
+    && rm -f /lib/systemd/system/sockets.target.wants/*udev* \
+    && rm -f /lib/systemd/system/sockets.target.wants/*initctl* \
+    && rm -f /lib/systemd/system/basic.target.wants/* \
+    && rm -f /lib/systemd/system/anaconda.target.wants/*
+
+# Install required packages
+RUN apt-get install -y \
+    openssh-server \
+    sudo \
+    nginx \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    wget \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create the deploy user (used by djaploy for SSH)
+RUN useradd -m -s /bin/bash deploy \
+    && echo "deploy:deploy" | chpasswd \
+    && usermod -aG sudo deploy \
+    && echo "deploy ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Create the app user (used by djaploy for running the application)
+RUN useradd -m -s /bin/bash app \
+    && echo "app:app" | chpasswd
+
+# Install Poetry for the app user at ~/.local/bin/poetry (where djaploy expects it)
+RUN sudo -u app pip3 install --user poetry
+
+# Ensure app user owns its home directories
+RUN mkdir -p /home/app/.config/pypoetry /home/app/.cache \
+    && chown -R app:app /home/app
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# Set up SSH keys for the deploy user
+RUN mkdir -p /home/deploy/.ssh \
+    && ssh-keygen -t ed25519 -f /home/deploy/.ssh/id_ed25519 -N "" \
+    && cat /home/deploy/.ssh/id_ed25519.pub >> /home/deploy/.ssh/authorized_keys \
+    && chmod 700 /home/deploy/.ssh \
+    && chmod 600 /home/deploy/.ssh/authorized_keys \
+    && chown -R deploy:deploy /home/deploy/.ssh
+
+# Enable SSH and nginx via systemd
+RUN systemctl enable ssh nginx
+
+# Remove default nginx site
+RUN rm -f /etc/nginx/sites-enabled/default
+
+EXPOSE 22 80
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

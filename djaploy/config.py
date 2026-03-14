@@ -41,7 +41,7 @@ class DjaployConfig:
     git_dir: Optional[Path] = None
     
     # Djaploy directory settings
-    djaploy_dir: Optional[Path] = None  # Contains config.py, deploy_files/, inventory/
+    djaploy_dir: Optional[Path] = None  # Contains config.py, inventory/
     manage_py_path: Optional[Path] = None  # Relative project path to manage.py file
     
     # Server settings
@@ -52,19 +52,7 @@ class DjaployConfig:
     python_version: str = "3.11"
     python_compile: bool = False  # Whether to compile Python from source
     
-    # Modules to enable
-    modules: List[str] = field(default_factory=lambda: [
-        "djaploy.modules.core",
-        "djaploy.modules.nginx",
-        "djaploy.modules.systemd"
-    ])
-
-    # Modules to use for sync_certs command
-    sync_certs_modules: List[str] = field(default_factory=lambda: [
-        "djaploy.modules.sync_certs",
-    ])
-
-    # Module configurations
+    # App/hook configurations (keyed by app name, e.g. "core", "versioning")
     module_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     
     # Deployment settings
@@ -73,8 +61,9 @@ class DjaployConfig:
     keep_releases: int = 5  # Number of releases to keep (zero_downtime only)
     # Paths (relative to git/artifact root) to symlink from shared/ into each release.
     # When None (default), auto-detected from Django settings (STATIC_ROOT,
-    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
-    # Note: venv is shared implicitly via the stable current/ symlink path.
+    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). For zero_downtime deploys, .venv is
+    # auto-added so poetry reuses the same virtualenv across releases.
+    # Set explicitly to override or to [] to disable.
     shared_resources: Optional[List[str]] = None
     # External database directory. Created during configure_server with correct
     # ownership. Use this to keep databases outside the app dir so they survive
@@ -106,13 +95,6 @@ class DjaployConfig:
         # Auto-detect shared_resources from Django settings if not explicitly set
         if self.shared_resources is None:
             self.shared_resources = self._resolve_shared_resources()
-
-        # Add SSL module if SSL is enabled
-        if self.ssl_enabled and "djaploy.modules.ssl" not in self.modules:
-            self.modules.append("djaploy.modules.ssl")
-
-        if "djaploy.modules.tailscale" in self.modules and "djaploy.modules.tailscale" not in self.sync_certs_modules:
-            self.sync_certs_modules.insert(0, "djaploy.modules.tailscale")
     
     def _resolve_shared_resources(self) -> List[str]:
         """Auto-detect shared resources from Django settings.
@@ -132,17 +114,22 @@ class DjaployConfig:
             # a subdirectory of the artifact.
             artifact_root = self.git_dir or self.project_dir
             if artifact_root is None:
-                return resources
+                base_dir = getattr(django_settings, 'BASE_DIR', None)
+                if base_dir:
+                    artifact_root = Path(base_dir)
+                else:
+                    return resources
 
             for setting_name in ('STATIC_ROOT', 'MEDIA_ROOT', 'PRIVATE_MEDIA_ROOT'):
                 value = getattr(django_settings, setting_name, None)
-                if value:
+                if not value or not isinstance(value, (str, Path)):
+                    continue
+                try:
                     abs_path = Path(value)
-                    try:
-                        rel = str(abs_path.relative_to(artifact_root))
-                        resources.append(rel)
-                    except ValueError:
-                        pass  # Outside artifact root, no symlink needed
+                    rel = str(abs_path.relative_to(artifact_root))
+                    resources.append(rel)
+                except (ValueError, TypeError):
+                    pass  # Outside artifact root or invalid path
         except Exception:
             pass
         return resources
@@ -164,10 +151,6 @@ class DjaployConfig:
             project_name=self.project_name,
         )
 
-    def get_deploy_files_dir(self) -> Path:
-        """Get the deploy_files directory path"""
-        return self.djaploy_dir / "deploy_files"
-    
     def get_inventory_dir(self) -> Path:
         """Get the inventory directory path"""
         return self.djaploy_dir / "inventory"
