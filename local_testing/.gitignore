@@ -1,0 +1,12 @@
+# Generated SSH keys
+keys/
+
+# Django artifacts
+helloworld/db.sqlite3
+helloworld/staticfiles/
+helloworld/media/
+helloworld/*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
