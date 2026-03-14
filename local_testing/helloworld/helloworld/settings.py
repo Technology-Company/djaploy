@@ -9,7 +9,8 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = BASE_DIR
-GIT_DIR = PROJECT_DIR.parent
+# GIT_DIR points to the helloworld project root (its own git repo)
+GIT_DIR = PROJECT_DIR
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = "django-insecure-local-testing-only-do-not-use-in-production"
@@ -23,8 +24,14 @@ ALLOWED_HOSTS = ["*"]
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.staticfiles",
-    "djaploy",
 ]
+
+# djaploy is only needed on the developer machine for management commands
+try:
+    import djaploy  # noqa: F401
+    INSTALLED_APPS.append("djaploy")
+except ImportError:
+    pass
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -49,10 +56,15 @@ TEMPLATES = [
 WSGI_APPLICATION = "helloworld.wsgi.application"
 
 # Database — SQLite for simplicity
+# On zero-downtime deploys each release is under releases/<release-name>/,
+# so the db must live in shared/ to persist across symlink swaps.
+# BASE_DIR resolves to the release dir; go up twice to reach the app root.
+_shared_dir = BASE_DIR.parent.parent / "shared"
+_db_path = _shared_dir / "db.sqlite3" if _shared_dir.is_dir() else BASE_DIR / "db.sqlite3"
 DATABASES = {
     "default": {
-        "ENGINE": "django.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": _db_path,
     }
 }
 
@@ -69,8 +81,3 @@ DJAPLOY_CONFIG_DIR = PROJECT_DIR / "infra"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Import local settings if they exist
-try:
-    from helloworld.local import *  # noqa: F401, F403
-except ImportError:
-    pass

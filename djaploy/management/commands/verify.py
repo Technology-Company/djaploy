@@ -42,10 +42,7 @@ class Command(BaseCommand):
         config = self.check_configuration()
         
         if config:
-            # 3. Check deploy files
-            self.check_deploy_files(config)
-            
-            # 4. Check inventory
+            # 3. Check inventory
             self.check_inventory(config)
             
             # 5. Check modules
@@ -137,48 +134,9 @@ class Command(BaseCommand):
         self.stdout.write("")
         return config
         
-    def check_deploy_files(self, config):
-        """Check deploy files directory"""
-        self.stdout.write(self.style.HTTP_INFO("3. Deploy Files"))
-        self.stdout.write("-" * 40)
-        
-        deploy_files_dir = config.get_deploy_files_dir()
-        
-        if deploy_files_dir.exists():
-            self.stdout.write(self.style.SUCCESS(f"  ✓ Deploy files directory exists: {deploy_files_dir}"))
-            
-            # List files in deploy directory
-            deploy_files = list(deploy_files_dir.iterdir())
-            if deploy_files:
-                self.stdout.write(f"  • Found {len(deploy_files)} deploy file(s):")
-                if self.verbose:
-                    for f in deploy_files[:10]:  # Show first 10 files
-                        self.stdout.write(f"    - {f.name}")
-                    if len(deploy_files) > 10:
-                        self.stdout.write(f"    ... and {len(deploy_files) - 10} more")
-            else:
-                self.warnings.append("Deploy files directory is empty")
-                self.stdout.write(self.style.WARNING("  ⚠ Deploy files directory is empty"))
-                
-            # Check for common required files
-            common_files = ['requirements.txt', '.env.production']
-            for filename in common_files:
-                filepath = deploy_files_dir / filename
-                if filepath.exists():
-                    self.stdout.write(f"  • {filename}: Found")
-                elif self.verbose:
-                    self.stdout.write(self.style.WARNING(f"  • {filename}: Not found (may not be required)"))
-                    
-        else:
-            self.warnings.append(f"Deploy files directory does not exist: {deploy_files_dir}")
-            self.stdout.write(self.style.WARNING(f"  ⚠ Deploy files directory does not exist: {deploy_files_dir}"))
-            self.stdout.write(f"    Create it with: mkdir -p {deploy_files_dir}")
-            
-        self.stdout.write("")
-        
     def check_inventory(self, config):
         """Check inventory configuration"""
-        self.stdout.write(self.style.HTTP_INFO("4. Inventory"))
+        self.stdout.write(self.style.HTTP_INFO("3. Inventory"))
         self.stdout.write("-" * 40)
         
         inventory_dir = config.get_inventory_dir()
@@ -257,7 +215,7 @@ class Command(BaseCommand):
         
     def check_modules(self, config):
         """Check discovered djaploy apps"""
-        self.stdout.write(self.style.HTTP_INFO("5. Apps"))
+        self.stdout.write(self.style.HTTP_INFO("4. Apps"))
         self.stdout.write("-" * 40)
 
         from pathlib import Path
@@ -282,7 +240,7 @@ class Command(BaseCommand):
         
     def check_project_structure(self, config):
         """Check project structure and paths"""
-        self.stdout.write(self.style.HTTP_INFO("6. Project Structure"))
+        self.stdout.write(self.style.HTTP_INFO("5. Project Structure"))
         self.stdout.write("-" * 40)
         
         # Check project directory

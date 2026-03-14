@@ -6,8 +6,6 @@ inside its body so the module can be imported at discovery time without pyinfra
 being available.
 """
 
-from pathlib import Path
-
 
 def is_zero_downtime(project_config) -> bool:
     return getattr(project_config, 'deployment_strategy', 'in_place') == 'zero_downtime'
@@ -118,29 +116,37 @@ def compile_python(version: str, host_data):
 
 
 def deploy_config_files(host_data, project_config, app_path: str):
-    """Deploy configuration files (nginx, systemd) from the artifact."""
-    from pyinfra.operations import server
+    """Render and deploy config file templates (systemd, nginx) to the server."""
+    from io import StringIO
+    from pyinfra.operations import files
+    from djaploy.apps.core.infra.templates import (
+        SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, NGINX_SITE,
+        build_template_context,
+    )
 
-    env_name = getattr(host_data, 'env', 'production')
+    project_name = project_config.project_name
+    ctx = build_template_context(host_data, project_config)
 
-    if getattr(project_config, 'djaploy_dir', None) and getattr(project_config, 'project_dir', None):
-        djaploy_dir = Path(project_config.djaploy_dir)
-        project_dir = Path(project_config.project_dir)
-        try:
-            config_rel_path = djaploy_dir.relative_to(project_dir.parent)
-        except ValueError:
-            config_rel_path = "infra"
+    # Select systemd template based on deployment strategy
+    if is_zero_downtime(project_config):
+        systemd_tpl = SYSTEMD_ZERO_DOWNTIME
     else:
-        config_rel_path = "infra"
+        systemd_tpl = SYSTEMD_IN_PLACE
 
-    deploy_files_path = f"{app_path}/{config_rel_path}/deploy_files/{env_name}"
-
-    server.shell(
-        name="Put deploy files (NGINX, systemd) in place on remote",
-        commands=[
-            f"if [ -d {deploy_files_path} ]; then cp -r {deploy_files_path}/* /; fi",
-        ],
+    files.template(
+        name=f"Render {project_name} systemd service",
+        src=StringIO(systemd_tpl),
+        dest=f"/etc/systemd/system/{project_name}.service",
         _sudo=True,
+        **ctx,
+    )
+
+    files.template(
+        name=f"Render {project_name} nginx config",
+        src=StringIO(NGINX_SITE),
+        dest=f"/etc/nginx/sites-available/{project_name}",
+        _sudo=True,
+        **ctx,
     )
 
 
@@ -166,24 +172,86 @@ def install_dependencies(app_user: str, app_path: str, project_config):
 
     python_version = project_config.python_version
     poetry_bin = f"/home/{app_user}/.local/bin/poetry"
+    poetry_lock_enabled = core_config.get("poetry_lock", False)
+    poetry_lock_args = core_config.get("poetry_lock_args", None)
 
+    if is_zero_downtime(project_config):
+        # Hash poetry.lock + python version to create/reuse shared venvs.
+        # Each release gets a .venv symlink pointing to the shared venv,
+        # so current/.venv/bin/... always resolves correctly.
+        app_name = project_config.project_name
+        base_path = f"/home/{app_user}/apps/{app_name}"
+        shared_path = f"{base_path}/shared"
+        releases_path = f"{base_path}/releases"
+
+        commands = []
+
+        # Poetry lock if configured (runs without venv)
+        if poetry_lock_enabled:
+            if poetry_lock_args:
+                commands.append(f"{poetry_bin} lock {poetry_lock_args}")
+            else:
+                commands.append(
+                    f"{poetry_bin} lock --no-upgrade 2>/dev/null"
+                    f" || {poetry_bin} lock --no-update"
+                )
+
+        # Ensure poetry.lock exists (needed for hashing)
+        commands.append(
+            f'test -f poetry.lock || {poetry_bin} lock'
+        )
+
+        # Compute lock hash, create shared venv if missing, symlink into release.
+        # NOTE: use $VAR not ${VAR} — pyinfra interprets {…} as format placeholders.
+        commands.append(
+            f'LOCK_HASH=$(sha256sum poetry.lock | cut -c1-12) && '
+            f'VENV_DIR="{shared_path}/venv-$LOCK_HASH-py{python_version}" && '
+            f'if [ ! -d "$VENV_DIR/bin" ]; then '
+            f'python{python_version} -m venv "$VENV_DIR" && '
+            f'VIRTUAL_ENV="$VENV_DIR" {poetry_cmd}; '
+            f'fi && '
+            f'ln -sfn "$VENV_DIR" .venv'
+        )
+
+        # Clean up shared venvs no longer referenced by any release
+        commands.append(
+            f'for v in {shared_path}/venv-*-py*; do '
+            f'[ -d "$v" ] || continue; '
+            f'USED=false; '
+            f'for r in {releases_path}/*/; do '
+            f'[ "$(readlink "$r.venv" 2>/dev/null)" = "$v" ] && USED=true && break; '
+            f'done; '
+            f'$USED || rm -rf "$v"; '
+            f'done'
+        )
+
+        # NOTE: _use_sudo_login=False here — sudo -i re-parses command
+        # strings through the login shell, which breaks && chains and
+        # shell variable expansion.  All binaries use absolute paths so
+        # a login shell is not required.
+        server.shell(
+            name="Install Python dependencies",
+            commands=commands,
+            _sudo=True,
+            _sudo_user=app_user,
+            _chdir=app_path,
+        )
+        return
+
+    # In-place deployment: use poetry's own venv management
     commands = [
         f"{poetry_bin} config virtualenvs.in-project false",
         f"{poetry_bin} env use python{python_version}",
     ]
 
-    poetry_lock_enabled = core_config.get("poetry_lock", False)
-    poetry_lock_args = core_config.get("poetry_lock_args", None)
-
     if poetry_lock_enabled:
         if poetry_lock_args:
-            lock_cmd = f"{poetry_bin} lock {poetry_lock_args}"
+            commands.append(f"{poetry_bin} lock {poetry_lock_args}")
         else:
-            lock_cmd = (
+            commands.append(
                 f"{poetry_bin} lock --no-upgrade 2>/dev/null"
                 f" || {poetry_bin} lock --no-update"
             )
-        commands.append(lock_cmd)
 
     commands.append(poetry_cmd)
 
@@ -211,10 +279,11 @@ def run_migrations(app_user: str, app_path: str, project_config):
     if isinstance(databases, str):
         databases = [databases]
 
+    python_cmd = get_python_cmd(app_user, app_path, project_config)
     migration_commands = []
     for db in databases:
         migration_commands.append(
-            f"/home/{app_user}/.local/bin/poetry run python {manage_py} migrate --database={db} --noinput"
+            f"{python_cmd} {manage_py} migrate --database={db} --noinput"
         )
 
     server.shell(
@@ -235,11 +304,12 @@ def collect_static(app_user: str, app_path: str, project_config):
     if not manage_py:
         return
 
+    python_cmd = get_python_cmd(app_user, app_path, project_config)
     clear_flag = "" if is_zero_downtime(project_config) else " --clear"
     server.shell(
         name="Collect static files",
         commands=[
-            f"/home/{app_user}/.local/bin/poetry run python {manage_py} collectstatic --noinput{clear_flag}",
+            f"{python_cmd} {manage_py} collectstatic --noinput{clear_flag}",
         ],
         _sudo=True,
         _sudo_user=app_user,
@@ -307,6 +377,17 @@ def get_manage_py_path(app_path: str, project_config) -> str:
     if getattr(project_config, 'manage_py_path', None):
         return str(project_config.manage_py_path)
     return None
+
+
+def get_python_cmd(app_user: str, app_path: str, project_config) -> str:
+    """Get the python command prefix for running management commands.
+
+    For zero-downtime deploys, uses the release's .venv/bin/python directly.
+    For in-place deploys, uses 'poetry run python'.
+    """
+    if is_zero_downtime(project_config):
+        return f"{app_path}/.venv/bin/python"
+    return f"/home/{app_user}/.local/bin/poetry run python"
 
 
 def configure_http_challenge_sudo(ssh_user: str, project_config):

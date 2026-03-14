@@ -5,12 +5,15 @@ services:
       context: .
       dockerfile: Dockerfile.server
     container_name: djaploy-test-server
+    privileged: true
+    volumes:
+      - ssh-keys:/home/deploy/.ssh
     ports:
       - "2222:22"   # SSH
       - "8080:80"   # Nginx → Django
-    volumes:
-      # Mount the SSH key so we can grab it from the host
-      - ssh-keys:/home/deploy/.ssh
+    tmpfs:
+      - /run
+      - /run/lock
 
   # Helper to extract SSH keys for the host
   ssh-keygen:

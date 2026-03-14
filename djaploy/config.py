@@ -41,7 +41,7 @@ class DjaployConfig:
     git_dir: Optional[Path] = None
     
     # Djaploy directory settings
-    djaploy_dir: Optional[Path] = None  # Contains config.py, deploy_files/, inventory/
+    djaploy_dir: Optional[Path] = None  # Contains config.py, inventory/
     manage_py_path: Optional[Path] = None  # Relative project path to manage.py file
     
     # Server settings
@@ -61,8 +61,9 @@ class DjaployConfig:
     keep_releases: int = 5  # Number of releases to keep (zero_downtime only)
     # Paths (relative to git/artifact root) to symlink from shared/ into each release.
     # When None (default), auto-detected from Django settings (STATIC_ROOT,
-    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
-    # Note: venv is shared implicitly via the stable current/ symlink path.
+    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). For zero_downtime deploys, .venv is
+    # auto-added so poetry reuses the same virtualenv across releases.
+    # Set explicitly to override or to [] to disable.
     shared_resources: Optional[List[str]] = None
     # External database directory. Created during configure_server with correct
     # ownership. Use this to keep databases outside the app dir so they survive
@@ -150,10 +151,6 @@ class DjaployConfig:
             project_name=self.project_name,
         )
 
-    def get_deploy_files_dir(self) -> Path:
-        """Get the deploy_files directory path"""
-        return self.djaploy_dir / "deploy_files"
-    
     def get_inventory_dir(self) -> Path:
         """Get the inventory directory path"""
         return self.djaploy_dir / "inventory"

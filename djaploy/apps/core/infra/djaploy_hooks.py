@@ -113,7 +113,6 @@ def configure_server(host_data, project_config):
             mkdir_commands = [
                 f"mkdir -p {app_path}/shared/{resource}"
                 for resource in shared_resources
-                if not resource.startswith('.')
             ]
             if mkdir_commands:
                 mkdir_commands.append(f"chown -R {app_user}:{app_user} {app_path}/shared")

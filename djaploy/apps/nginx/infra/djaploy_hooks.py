@@ -66,10 +66,15 @@ def deploy_nginx(host_data, project_config, artifact_path):
                 _sudo=True,
             )
 
+    # Symlink each site individually to avoid creating a literal '*' symlink
+    # when sites-available is empty, and to avoid enabling unrelated sites
+    # on multi-tenant servers.
     server.shell(
         name="Enable NGINX sites",
         commands=[
-            "ln -fs /etc/nginx/sites-available/* /etc/nginx/sites-enabled/",
+            "for f in /etc/nginx/sites-available/*; do "
+            "[ -f \"$f\" ] && ln -fs \"$f\" /etc/nginx/sites-enabled/; "
+            "done",
         ],
         _sudo=True,
     )

@@ -1,12 +1,22 @@
 # Target server for local djaploy testing.
-# Provides SSH, systemd, nginx, and Python — everything djaploy expects
-# on a real deployment target.
+# Uses systemd as init so djaploy's systemd hooks work correctly.
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV container=docker
+
+# Install systemd and remove unnecessary units
+RUN apt-get update && apt-get install -y systemd systemd-sysv \
+    && rm -f /lib/systemd/system/multi-user.target.wants/* \
+    && rm -f /etc/systemd/system/*.wants/* \
+    && rm -f /lib/systemd/system/local-fs.target.wants/* \
+    && rm -f /lib/systemd/system/sockets.target.wants/*udev* \
+    && rm -f /lib/systemd/system/sockets.target.wants/*initctl* \
+    && rm -f /lib/systemd/system/basic.target.wants/* \
+    && rm -f /lib/systemd/system/anaconda.target.wants/*
 
 # Install required packages
-RUN apt-get update && apt-get install -y \
+RUN apt-get install -y \
     openssh-server \
     sudo \
     nginx \
@@ -19,9 +29,6 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry (as root, available system-wide)
-RUN pip3 install poetry
-
 # Create the deploy user (used by djaploy for SSH)
 RUN useradd -m -s /bin/bash deploy \
     && echo "deploy:deploy" | chpasswd \
@@ -31,6 +38,13 @@ RUN useradd -m -s /bin/bash deploy \
 # Create the app user (used by djaploy for running the application)
 RUN useradd -m -s /bin/bash app \
     && echo "app:app" | chpasswd
+
+# Install Poetry for the app user at ~/.local/bin/poetry (where djaploy expects it)
+RUN sudo -u app pip3 install --user poetry
+
+# Ensure app user owns its home directories
+RUN mkdir -p /home/app/.config/pypoetry /home/app/.cache \
+    && chown -R app:app /home/app
 
 # Configure SSH
 RUN mkdir -p /var/run/sshd \
@@ -46,13 +60,13 @@ RUN mkdir -p /home/deploy/.ssh \
     && chmod 600 /home/deploy/.ssh/authorized_keys \
     && chown -R deploy:deploy /home/deploy/.ssh
 
+# Enable SSH and nginx via systemd
+RUN systemctl enable ssh nginx
+
 # Remove default nginx site
 RUN rm -f /etc/nginx/sites-enabled/default
 
 EXPOSE 22 80
 
-# Start SSH (systemd is not available in Docker, so we start services manually)
-COPY scripts/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-CMD ["/entrypoint.sh"]
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
