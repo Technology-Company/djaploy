@@ -87,7 +87,7 @@ def compile_python(version: str, host_data):
         server.shell(
             name=f"Configure and compile Python {full_version}",
             commands=[
-                f"./configure --enable-optimizations --with-ensurepip=install",
+                "./configure --enable-optimizations --with-ensurepip=install",
                 "make -j$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))"
             ],
             _chdir=python_source_dir,

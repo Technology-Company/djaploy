@@ -61,7 +61,7 @@ def deploy_nginx(host_data, project_config, artifact_path):
                 name=f"Deploy SSL key for {domain_conf['identifier']}",
                 src=domain_conf["key_file"],
                 dest=f"/home/{app_user}/.ssl/{domain_conf['identifier']}.key",
-                mode="644",
+                mode="600",
                 force=True,
                 _sudo=True,
             )

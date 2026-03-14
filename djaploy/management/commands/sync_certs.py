@@ -86,4 +86,4 @@ class Command(BaseCommand):
                 self.style.SUCCESS(f"Successfully synchronized certificates for {env}")
             )
         except Exception as e:
-            raise CommandError(f"Certificate synchronization failed: {e}")
+            raise CommandError(f"Certificate synchronization failed: {e}") from e

@@ -248,7 +248,7 @@ class Command(BaseCommand):
         except Exception as e:
             raise CommandError(
                 f"Command '{command_name}' failed: {e}"
-            )
+            ) from e
 
         self.stdout.write(
             self.style.SUCCESS(f"Successfully ran '{command_name}' for {env}")
@@ -266,7 +266,7 @@ class Command(BaseCommand):
         try:
             return load_config(config_path)
         except Exception as e:
-            raise CommandError(f"Failed to load djaploy config: {e}")
+            raise CommandError(f"Failed to load djaploy config: {e}") from e
 
     def _resolve_inventory(self, env, config, options):
         if options["inventory"]:

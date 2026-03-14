@@ -4,6 +4,8 @@ Tailscale hooks for djaploy.
 Handles Tailscale VPN installation, authentication, and certificate generation.
 """
 
+import shlex
+
 from djaploy.hooks import deploy_hook
 
 
@@ -32,7 +34,7 @@ def configure_tailscale(host_data, project_config):
     server.shell(
         name="Authenticate Tailscale",
         commands=[
-            f'tailscale up --authkey {auth_key}'
+            f'tailscale up --authkey {shlex.quote(auth_key)}'
         ],
         _sudo=True,
     )

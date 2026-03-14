@@ -137,15 +137,16 @@ class TestDiscovery(unittest.TestCase):
             # The hook should be registered on the global registry (because
             # the hooks file imports from djaploy.hooks which uses the global)
             from djaploy.hooks import _registry as global_registry
-            hooks = global_registry._hooks.get("deploy:prerequisites", [])
-            found = any(fn.__name__ == "my_app_hook" for fn in hooks)
-            self.assertTrue(found, "my_app_hook should be registered on the global registry")
-
-            # Clean up global registry
-            global_registry._hooks["deploy:prerequisites"] = [
-                fn for fn in global_registry._hooks.get("deploy:prerequisites", [])
-                if fn.__name__ != "my_app_hook"
-            ]
+            try:
+                hooks = global_registry._hooks.get("deploy:prerequisites", [])
+                found = any(fn.__name__ == "my_app_hook" for fn in hooks)
+                self.assertTrue(found, "my_app_hook should be registered on the global registry")
+            finally:
+                # Clean up global registry
+                global_registry._hooks["deploy:prerequisites"] = [
+                    fn for fn in global_registry._hooks.get("deploy:prerequisites", [])
+                    if fn.__name__ != "my_app_hook"
+                ]
 
     def test_discover_is_idempotent(self):
         registry = HookRegistry()
@@ -188,28 +189,28 @@ class TestBuiltinHooks(unittest.TestCase):
         old_hooks = _registry._hooks.copy()
         _registry._hooks.clear()
 
-        import importlib
-        import djaploy.builtin_hooks
-        importlib.reload(djaploy.builtin_hooks)
+        try:
+            import importlib
+            import djaploy.builtin_hooks
+            importlib.reload(djaploy.builtin_hooks)
 
-        # Check deploy:postcommand hooks (notification + tagging)
-        post_hooks = _registry._hooks.get("deploy:postcommand", [])
-        post_names = [fn.__name__ for fn in post_hooks]
-        self.assertIn("_send_notification_hook", post_names)
-        self.assertIn("_create_version_tag_hook", post_names)
+            # Check deploy:postcommand hooks (notification + tagging)
+            post_hooks = _registry._hooks.get("deploy:postcommand", [])
+            post_names = [fn.__name__ for fn in post_hooks]
+            self.assertIn("_send_notification_hook", post_names)
+            self.assertIn("_create_version_tag_hook", post_names)
 
-        # Check deploy:precommand hooks (prepare, artifact, local_settings, release_info)
-        pre_hooks = _registry._hooks.get("deploy:precommand", [])
-        pre_names = [fn.__name__ for fn in pre_hooks]
-        self.assertIn("_deploy_create_artifact", pre_names)
+            # Check deploy:precommand hooks (prepare, artifact, local_settings, release_info)
+            pre_hooks = _registry._hooks.get("deploy:precommand", [])
+            pre_names = [fn.__name__ for fn in pre_hooks]
+            self.assertIn("_deploy_create_artifact", pre_names)
 
-        # Check rollback:precommand hook (strategy validation)
-        rollback_hooks = _registry._hooks.get("rollback:precommand", [])
-        rollback_names = [fn.__name__ for fn in rollback_hooks]
-        self.assertIn("_rollback_validate_strategy", rollback_names)
-
-        # Restore
-        _registry._hooks = old_hooks
+            # Check rollback:precommand hook (strategy validation)
+            rollback_hooks = _registry._hooks.get("rollback:precommand", [])
+            rollback_names = [fn.__name__ for fn in rollback_hooks]
+            self.assertIn("_rollback_validate_strategy", rollback_names)
+        finally:
+            _registry._hooks = old_hooks
 
     @patch("djaploy.deploy._send_notification")
     def test_notification_hook_calls_send_notification(self, mock_send):

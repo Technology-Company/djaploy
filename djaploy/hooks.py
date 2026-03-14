@@ -105,7 +105,7 @@ class HookRegistry:
 
         try:
             from .discovery import get_app_infra_dirs
-        except Exception:
+        except (ImportError, ModuleNotFoundError):
             # If discovery is not available (e.g. Django not configured), skip
             self._discovered = True
             return
@@ -120,7 +120,7 @@ class HookRegistry:
     def _load_builtin_hooks(self) -> None:
         try:
             import djaploy.builtin_hooks  # noqa: F401
-        except Exception:
+        except (ImportError, ModuleNotFoundError):
             pass
 
     def _load_djaploy_apps(self) -> None:

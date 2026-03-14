@@ -20,10 +20,14 @@ Directory structure expected in each app:
 
 import importlib
 import pkgutil
+import re
 from pathlib import Path
 from typing import Optional, List, Tuple
 
 from django.apps import apps
+
+# Only allow safe names: alphanumeric, hyphen, underscore
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 def get_app_infra_dirs() -> List[Tuple[str, Path]]:
@@ -55,6 +59,8 @@ def find_command(command_name: str) -> Optional[Path]:
     Returns:
         Path to the command file, or None if not found.
     """
+    if not _SAFE_NAME_RE.match(command_name):
+        return None
     for app_label, infra_dir in get_app_infra_dirs():
         command_file = infra_dir / "commands" / f"{command_name}.py"
         if command_file.is_file():
@@ -75,6 +81,8 @@ def find_inventory(env_name: str) -> Optional[Path]:
     Returns:
         Path to the inventory file, or None if not found.
     """
+    if not _SAFE_NAME_RE.match(env_name):
+        return None
     for app_label, infra_dir in get_app_infra_dirs():
         inventory_file = infra_dir / "inventory" / f"{env_name}.py"
         if inventory_file.is_file():

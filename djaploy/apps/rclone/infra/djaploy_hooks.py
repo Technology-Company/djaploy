@@ -5,6 +5,7 @@ Manages rclone-based backups: installs rclone, deploys backup configuration
 and scripts, sets up cron jobs, and handles restore from backup.
 """
 
+import shlex
 import tempfile
 from typing import Any, Dict, List
 
@@ -58,7 +59,7 @@ sha1sum_command = none"""
     server.shell(
         name="Obscure password in rclone config",
         commands=[
-            f'cd /home/{app_user} && rclone config update backup pass --obscure "{backup_password}"'
+            f'cd /home/{app_user} && rclone config update backup pass --obscure {shlex.quote(backup_password)}'
         ],
         _sudo=True,
         _sudo_user=app_user,
@@ -444,7 +445,7 @@ def restore_rclone(host_data, project_config, restore_opts):
     media_path = (
         backup_config.get("media_path") if isinstance(backup_config, dict)
         else getattr(backup_config, "media_path", None)
-    ) or f"/home/{app_user}/apps/{project_config.project_name}/public/media"
+    ) or f"/home/{app_user}/apps/{project_config.project_name}/media"
 
     backup_host_name = restore_opts.get("backup_host_name", "unknown")
     date = restore_opts.get("date", "")

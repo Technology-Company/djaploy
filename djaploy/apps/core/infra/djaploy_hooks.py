@@ -19,7 +19,7 @@ def configure_server(host_data, project_config):
     from pathlib import Path
 
     app_user = getattr(host_data, 'app_user', None) or project_config.app_user
-    ssh_user = getattr(host_data, 'ssh_user')
+    ssh_user = getattr(host_data, 'ssh_user', 'deploy')
 
     # Create application user
     server.user(
