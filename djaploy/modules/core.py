@@ -496,12 +496,21 @@ class CoreModule(BaseModule):
         # Store release path so other modules and post_deploy can access it
         host.data._zero_downtime_release_path = release_path
 
-        # Clean up old releases
+        # Clean up old releases, preserving the release that current/
+        # points to.  At this point the symlink still targets the running
+        # release (swap happens later in post_deploy).  If a prior HUP
+        # reload failed, the service may still be serving from a release
+        # old enough to fall outside keep_releases — deleting it would
+        # crash the running process.
         keep_releases = max(getattr(project_config, 'keep_releases', 5), 1)
         server.shell(
-            name=f"Clean up old releases (keeping {keep_releases})",
+            name=f"Clean up old releases (keeping {keep_releases}, preserving active)",
             commands=[
-                f"cd {releases_path} && ls -1t | tail -n +{keep_releases + 1} | xargs -r rm -rf --",
+                (
+                    f"cd {releases_path} && "
+                    f"ACTIVE=$(basename \"$(readlink -f {app_path}/current)\" 2>/dev/null) && "
+                    f"ls -1t | grep -v \"^${{ACTIVE}}$\" | tail -n +{keep_releases + 1} | xargs -r rm -rf --"
+                ),
             ],
             _sudo=True,
             _sudo_user=app_user,
