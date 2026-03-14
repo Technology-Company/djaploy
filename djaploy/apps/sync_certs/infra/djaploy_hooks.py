@@ -82,8 +82,8 @@ def _reload_ssl_services(host_data):
             )
 
 
-@deploy_hook("deploy")
-def sync_certificates(host_data, project_config, artifact_path):
+@deploy_hook("sync_certs")
+def sync_certificates(host_data, project_config):
     """Main certificate synchronization operation."""
     from pyinfra.operations import files
     from djaploy.certificates import discover_certificates, OpFilePath

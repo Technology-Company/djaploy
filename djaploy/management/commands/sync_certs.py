@@ -7,7 +7,7 @@ from pathlib import Path
 
 from django.core.management import BaseCommand, CommandError
 
-from djaploy import deploy_project
+from djaploy import run_command
 from djaploy.management.utils import load_config
 
 
@@ -65,15 +65,22 @@ class Command(BaseCommand):
         
         self.stdout.write(f"Synchronizing certificates for {env}")
 
-        # Run certificate synchronization (sync_certs and tailscale apps
-        # are discovered automatically via the hook system)
+        from pathlib import Path
+        command_file = Path(__file__).resolve().parent.parent.parent / "commands" / "sync_certs.py"
+
         try:
-            deploy_project(
-                config,
-                inventory_file,
-                mode="latest",  # Mode doesn't matter for sync_certs
-                skip_prepare=not options["run_prepare"],
-            )
+            run_command({
+                "command": "sync_certs",
+                "config": config,
+                "env": env,
+                "skip_prepare": not options["run_prepare"],
+                "command_file": str(command_file),
+                "inventory_file": inventory_file,
+                "pyinfra_data": {
+                    "env": env,
+                    "djaploy_dir": str(config.djaploy_dir),
+                },
+            })
             
             self.stdout.write(
                 self.style.SUCCESS(f"Successfully synchronized certificates for {env}")

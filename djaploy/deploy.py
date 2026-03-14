@@ -195,16 +195,28 @@ def rollback_project(config: DjaployConfig,
 # ------------------------------------------------------------------
 
 def _get_module_config(config: DjaployConfig, name: str) -> Dict[str, Any]:
-    """Get app/hook config by name from module_configs."""
-    return config.module_configs.get(name, {})
+    """Get app/hook config by name from module_configs.
+
+    Checks both the short name (e.g. "versioning") and the legacy
+    fully-qualified path (e.g. "djaploy.modules.versioning") for
+    backwards compatibility.
+    """
+    return (
+        config.module_configs.get(name)
+        or config.module_configs.get(f"djaploy.modules.{name}")
+        or {}
+    )
 
 
 def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Calculate release info for notifications and tagging.
 
-    Returns None if notifications are not configured.
+    Returns None if versioning/notifications are not configured.
     """
     versioning_config = _get_module_config(config, "versioning")
+    if not versioning_config:
+        return None
+
     notifications_config = _get_module_config(config, "notifications")
 
     backend_config = notifications_config.get("backend_config", {})

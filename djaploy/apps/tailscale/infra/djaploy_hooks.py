@@ -14,7 +14,7 @@ def configure_tailscale(host_data, project_config):
     from pyinfra.facts.deb import DebPackage
     from pyinfra.operations import server
 
-    auth_key = host_data.get('tailscale_auth_key')
+    auth_key = getattr(host_data, 'tailscale_auth_key', None)
     if not auth_key:
         return  # Skip if no auth key configured
 
@@ -38,26 +38,26 @@ def configure_tailscale(host_data, project_config):
     )
 
 
-@deploy_hook("deploy")
-def deploy_tailscale_certificates(host_data, project_config, artifact_path):
+def _generate_tailscale_certs(host_data, project_config):
     """Generate Tailscale certificates for configured domains."""
     from pyinfra.operations import server, files
 
-    domains = host_data.get('domains', [])
+    domains = getattr(host_data, 'domains', [])
     if not domains:
         return
 
-    # Check if any Tailscale certificates are configured
     has_tailscale_certs = any(
-        d.get('__class__') == 'TailscaleDnsCertificate' for d in domains
+        d.get('__class__') == 'TailscaleDnsCertificate'
+        if isinstance(d, dict) else
+        getattr(d, '__class__', type(d)).__name__ == 'TailscaleDnsCertificate'
+        for d in domains
     )
     if not has_tailscale_certs:
         return
 
-    app_user = host_data.get('app_user') or project_config.app_user
+    app_user = getattr(host_data, 'app_user', None) or project_config.app_user
     ssl_dir = f'/home/{app_user}/.ssl'
 
-    # Ensure SSL directory exists
     files.directory(
         name="Create SSL certificates directory",
         path=ssl_dir,
@@ -66,10 +66,15 @@ def deploy_tailscale_certificates(host_data, project_config, artifact_path):
         _sudo=True,
     )
 
-    # Generate certificates for Tailscale domains
     for domain_conf in domains:
-        if domain_conf.get('__class__') == 'TailscaleDnsCertificate':
+        if isinstance(domain_conf, dict):
+            is_tailscale = domain_conf.get('__class__') == 'TailscaleDnsCertificate'
             identifier = domain_conf.get('identifier')
+        else:
+            is_tailscale = type(domain_conf).__name__ == 'TailscaleDnsCertificate'
+            identifier = getattr(domain_conf, 'identifier', None)
+
+        if is_tailscale and identifier:
             server.shell(
                 name=f"Generate Tailscale certificate for {identifier}",
                 commands=[
@@ -78,3 +83,15 @@ def deploy_tailscale_certificates(host_data, project_config, artifact_path):
                 _sudo=True,
                 _chdir=ssl_dir,
             )
+
+
+@deploy_hook("deploy")
+def deploy_tailscale_certificates(host_data, project_config, artifact_path):
+    """Generate Tailscale certificates during deploy."""
+    _generate_tailscale_certs(host_data, project_config)
+
+
+@deploy_hook("sync_certs")
+def sync_tailscale_certificates(host_data, project_config):
+    """Generate Tailscale certificates during sync_certs."""
+    _generate_tailscale_certs(host_data, project_config)
