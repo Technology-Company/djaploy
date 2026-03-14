@@ -115,8 +115,8 @@ class Command(BaseCommand):
                         if config.ssl_key_path:
                             self.stdout.write(f"    - Key: {config.ssl_key_path}")
                     
-                    if self.verbose:
-                        self.stdout.write(f"  • Modules: {', '.join(config.modules)}")
+                    if self.verbose and config.module_configs:
+                        self.stdout.write(f"  • App configs: {', '.join(config.module_configs.keys())}")
                     
                 except Exception as e:
                     self.errors.append(f"Configuration validation failed: {e}")
@@ -256,38 +256,28 @@ class Command(BaseCommand):
         self.stdout.write("")
         
     def check_modules(self, config):
-        """Check configured modules"""
-        self.stdout.write(self.style.HTTP_INFO("5. Modules"))
+        """Check discovered djaploy apps"""
+        self.stdout.write(self.style.HTTP_INFO("5. Apps"))
         self.stdout.write("-" * 40)
-        
-        if not config.modules:
-            self.warnings.append("No modules configured")
-            self.stdout.write(self.style.WARNING("  ⚠ No modules configured"))
-            self.stdout.write("")
-            return
-            
-        self.stdout.write(f"  Configured modules ({len(config.modules)}):")
-        
-        for module_name in config.modules:
-            try:
-                # Try to import the module
-                if '.' in module_name:
-                    module_path = module_name
-                else:
-                    module_path = f"djaploy.modules.{module_name}"
-                    
-                __import__(module_path)
-                self.stdout.write(self.style.SUCCESS(f"    ✓ {module_name}"))
-                
-                # Check module configuration if exists
-                module_config = config.get_module_config(module_name)
-                if module_config and self.verbose:
-                    self.stdout.write(f"      Config: {module_config}")
-                    
-            except ImportError as e:
-                self.errors.append(f"Module {module_name} could not be imported: {e}")
-                self.stdout.write(self.style.ERROR(f"    ✗ {module_name} - Import failed: {e}"))
-                
+
+        from pathlib import Path
+        apps_dir = Path(__file__).resolve().parent.parent.parent / "apps"
+        if apps_dir.is_dir():
+            apps = sorted(
+                d.name for d in apps_dir.iterdir()
+                if d.is_dir() and not d.name.startswith("_")
+                and (d / "infra" / "djaploy_hooks.py").is_file()
+            )
+            self.stdout.write(f"  Discovered apps ({len(apps)}):")
+            for app_name in apps:
+                self.stdout.write(self.style.SUCCESS(f"    ✓ {app_name}"))
+                app_config = config.get_module_config(app_name)
+                if app_config and self.verbose:
+                    self.stdout.write(f"      Config: {app_config}")
+        else:
+            self.warnings.append("No apps directory found")
+            self.stdout.write(self.style.WARNING("  ⚠ No apps directory found"))
+
         self.stdout.write("")
         
     def check_project_structure(self, config):
@@ -340,8 +330,8 @@ class Command(BaseCommand):
         if not self.errors and not self.warnings:
             self.stdout.write(self.style.SUCCESS("\n✅ ALL CHECKS PASSED - Djaploy is properly configured!\n"))
             self.stdout.write("You're ready to deploy with:")
-            self.stdout.write("  • python manage.py deploy <environment>")
-            self.stdout.write("  • python manage.py configureserver <environment> <host>")
+            self.stdout.write("  • python manage.py djaploy deploy --env <environment>")
+            self.stdout.write("  • python manage.py djaploy configure --env <environment>")
         else:
             if self.errors:
                 self.stdout.write(self.style.ERROR(f"\n❌ ERRORS ({len(self.errors)}):"))

@@ -65,14 +65,11 @@ class Command(BaseCommand):
         
         self.stdout.write(f"Synchronizing certificates for {env}")
 
-        # Use sync_certs_modules from config (defaults to just sync_certs module)
-        sync_config = config
-        sync_config.modules = config.sync_certs_modules
-        
-        # Run certificate synchronization
+        # Run certificate synchronization (sync_certs and tailscale apps
+        # are discovered automatically via the hook system)
         try:
             deploy_project(
-                sync_config,
+                config,
                 inventory_file,
                 mode="latest",  # Mode doesn't matter for sync_certs
                 skip_prepare=not options["run_prepare"],
