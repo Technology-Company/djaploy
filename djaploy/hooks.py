@@ -11,6 +11,11 @@ Two decorators are provided:
   Receives a single ``context`` dict.
 - ``@deploy_hook("name")`` — remote hook, runs on target servers via pyinfra.
   Called directly from the command files in ``djaploy/commands/``.
+
+Ordering is controlled by assigning hooks to the correct phase.  Each
+command file calls phases in a fixed sequence (e.g. ``deploy:pre`` →
+``deploy`` → ``deploy:post``).  Within a single phase hooks run in
+registration order (built-in apps first, then INSTALLED_APPS order).
 """
 
 import importlib.util
@@ -30,7 +35,7 @@ class HookRegistry:
 
     def __init__(self):
         self._hooks: Dict[str, List[Callable]] = {}
-        self._remote_hooks: Dict[str, List[Callable]] = {}
+        self._remote_hooks: Dict[str, List[RemoteFunctionHook]] = {}
         self._discovered = False
 
     # ------------------------------------------------------------------
@@ -73,7 +78,7 @@ class HookRegistry:
                 results.append(result)
         return results
 
-    def get_remote_hooks(self, hook_name: str) -> List[Callable]:
+    def get_remote_hooks(self, hook_name: str) -> List[RemoteFunctionHook]:
         """Return the list of remote hook functions for *hook_name*."""
         return list(self._remote_hooks.get(hook_name, []))
 

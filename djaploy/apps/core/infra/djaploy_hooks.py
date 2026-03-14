@@ -124,9 +124,9 @@ def configure_server(host_data, project_config):
                 )
 
 
-@deploy_hook("deploy")
+@deploy_hook("deploy:pre")
 def deploy_application(host_data, project_config, artifact_path):
-    """Upload artifact and deploy (in-place or zero-downtime)."""
+    """Upload artifact, extract, install deps, deploy configs."""
     from pyinfra import host
     from pyinfra.operations import server, files
     from djaploy.apps.core.infra.utils import (
@@ -276,7 +276,7 @@ def deploy_application(host_data, project_config, artifact_path):
         install_dependencies(app_user, app_path, project_config)
 
 
-@deploy_hook("deploy:post")
+@deploy_hook("deploy")
 def post_deploy(host_data, project_config, artifact_path):
     """Run migrations, collectstatic, and swap symlink (zero-downtime)."""
     from pyinfra import host

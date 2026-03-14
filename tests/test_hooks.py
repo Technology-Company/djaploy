@@ -266,6 +266,7 @@ class TestDjaployAppDiscovery(unittest.TestCase):
 
             hook_names = _registry.get_hook_names()
             self.assertIn("configure", hook_names)
+            self.assertIn("deploy:pre", hook_names)
             self.assertIn("deploy", hook_names)
             self.assertIn("deploy:post", hook_names)
             self.assertIn("rollback", hook_names)
@@ -275,20 +276,23 @@ class TestDjaployAppDiscovery(unittest.TestCase):
             configure_names = [h.function.__name__ for h in configure_hooks]
             self.assertIn("configure_server", configure_names)
 
+            # deploy:pre — upload, extract, configs, daemon-reload
+            pre_hooks = _registry.get_remote_hooks("deploy:pre")
+            pre_names = [h.function.__name__ for h in pre_hooks]
+            self.assertIn("deploy_application", pre_names)
+            self.assertIn("deploy_nginx", pre_names)
+            self.assertIn("reload_systemd_daemon", pre_names)
+
+            # deploy — migrations, collectstatic, symlink swap
             deploy_hooks = _registry.get_remote_hooks("deploy")
             deploy_names = [h.function.__name__ for h in deploy_hooks]
-            # Core hooks (alphabetically first)
-            self.assertIn("deploy_application", deploy_names)
-            # Nginx and systemd hooks
-            self.assertIn("deploy_nginx", deploy_names)
-            self.assertIn("reload_systemd_daemon", deploy_names)
+            self.assertIn("post_deploy", deploy_names)
 
-            # Verify ordering: core < nginx < systemd
-            core_idx = deploy_names.index("deploy_application")
-            nginx_idx = deploy_names.index("deploy_nginx")
-            systemd_idx = deploy_names.index("reload_systemd_daemon")
-            self.assertLess(core_idx, nginx_idx)
-            self.assertLess(nginx_idx, systemd_idx)
+            # deploy:post — reload services
+            post_hooks = _registry.get_remote_hooks("deploy:post")
+            post_names = [h.function.__name__ for h in post_hooks]
+            self.assertIn("reload_nginx", post_names)
+            self.assertIn("start_services", post_names)
 
             # Verify rollback hook
             rollback_hooks = _registry.get_remote_hooks("rollback")

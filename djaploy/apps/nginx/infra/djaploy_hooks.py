@@ -30,7 +30,7 @@ def configure_nginx(host_data, project_config):
         )
 
 
-@deploy_hook("deploy")
+@deploy_hook("deploy:pre")
 def deploy_nginx(host_data, project_config, artifact_path):
     """Deploy NGINX configuration files and SSL certificates."""
     from pyinfra.operations import server, files

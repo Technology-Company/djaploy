@@ -396,7 +396,7 @@ def configure_rclone(host_data, project_config):
     )
 
 
-@deploy_hook("deploy")
+@deploy_hook("deploy:pre")
 def deploy_rclone(host_data, project_config, artifact_path):
     """Deploy backup configuration and scripts."""
 
