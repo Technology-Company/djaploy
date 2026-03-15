@@ -3,7 +3,7 @@ Hook system for djaploy.
 
 Allows Django apps to register functions that run at specific moments in the
 deployment lifecycle. Each app can provide a ``djaploy_hooks.py`` file inside
-its ``infra/`` directory. All hooks from all apps are collected (not first-match-wins).
+its ``infra/`` directory. All hooks from all apps are collected.
 
 Two decorators are provided:
 
@@ -12,6 +12,17 @@ Two decorators are provided:
 - ``@deploy_hook("name")`` — remote hook, runs on target servers via pyinfra.
   Called directly from the command files in ``djaploy/commands/``.
 
+Overriding hooks:
+
+If a later app registers a hook with the **same function name** for the same
+phase, it replaces the earlier one.  Use ``override=True`` to suppress the
+warning::
+
+    @deploy_hook("deploy:configure", override=True)
+    def deploy_nginx(host_data, artifact_path):
+        # This replaces djaploy's built-in deploy_nginx
+        ...
+
 Ordering is controlled by assigning hooks to the correct phase.  Each
 command file calls phases in a fixed sequence (e.g. ``deploy:pre`` →
 ``deploy`` → ``deploy:post``).  Within a single phase hooks run in
@@ -19,9 +30,12 @@ registration order (built-in hooks first, then INSTALLED_APPS order).
 """
 
 import importlib.util
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,23 +56,57 @@ class HookRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register(self, hook_name: str, fn: Callable, *, remote: bool = False) -> None:
-        if remote:
-            self._remote_hooks.setdefault(hook_name, []).append(RemoteFunctionHook(function=fn))
-        else:
-            self._hooks.setdefault(hook_name, []).append(fn)
+    def register(self, hook_name: str, fn: Callable, *, remote: bool = False, override: bool = False) -> None:
+        fn_name = fn.__name__
 
-    def hook(self, name: str) -> Callable:
-        """Decorator for local hooks (run on the deploying machine)."""
+        if remote:
+            hooks = self._remote_hooks.setdefault(hook_name, [])
+            has_duplicate = any(h.function.__name__ == fn_name for h in hooks)
+            if has_duplicate:
+                if not override:
+                    log.warning(
+                        "Hook '%s' for phase '%s' already registered, "
+                        "ignoring duplicate from %s (use override=True to suppress)",
+                        fn_name, hook_name, fn.__module__ or "?",
+                    )
+                return  # First registration always wins
+            hooks.append(RemoteFunctionHook(function=fn))
+        else:
+            hooks = self._hooks.setdefault(hook_name, [])
+            has_duplicate = any(h.__name__ == fn_name for h in hooks)
+            if has_duplicate:
+                if not override:
+                    log.warning(
+                        "Hook '%s' for phase '%s' already registered, "
+                        "ignoring duplicate from %s (use override=True to suppress)",
+                        fn_name, hook_name, fn.__module__ or "?",
+                    )
+                return  # First registration always wins
+            hooks.append(fn)
+
+    def hook(self, name: str, *, override: bool = False) -> Callable:
+        """Decorator for local hooks (run on the deploying machine).
+
+        Args:
+            name: Hook phase name (e.g. "deploy:precommand")
+            override: If True, silently replace a hook with the same
+                      function name.  If False (default), log a warning.
+        """
         def decorator(fn: Callable) -> Callable:
-            self.register(name, fn, remote=False)
+            self.register(name, fn, remote=False, override=override)
             return fn
         return decorator
 
-    def deploy_hook(self, name: str) -> Callable:
-        """Decorator for remote hooks (run on target servers via pyinfra)."""
+    def deploy_hook(self, name: str, *, override: bool = False) -> Callable:
+        """Decorator for remote hooks (run on target servers via pyinfra).
+
+        Args:
+            name: Hook phase name (e.g. "deploy:configure")
+            override: If True, silently replace a hook with the same
+                      function name.  If False (default), log a warning.
+        """
         def decorator(fn: Callable) -> Callable:
-            self.register(name, fn, remote=True)
+            self.register(name, fn, remote=True, override=override)
             return fn
         return decorator
 

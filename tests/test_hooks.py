@@ -102,6 +102,107 @@ class TestHookRegistry(unittest.TestCase):
         self.assertEqual(ctx["result"], 42)
 
 
+class TestHookOverride(unittest.TestCase):
+    """Test hook override behavior: first registration wins, override controls warnings."""
+
+    def setUp(self):
+        self.registry = HookRegistry()
+
+    def test_first_registration_wins_for_local_hooks(self):
+        """A registers hook_a, B registers hook_a — A's runs, B's is ignored."""
+        calls = []
+
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            calls.append("A")
+
+        @self.registry.hook("configure")
+        def my_hook(ctx):  # noqa: F811 — same name on purpose
+            calls.append("B")
+
+        self.registry.call("configure", {})
+        self.assertEqual(calls, ["A"])
+
+    def test_first_registration_wins_for_remote_hooks(self):
+        """A registers deploy_nginx, B registers deploy_nginx — A's is returned."""
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data, artifact_path):
+            return "A"
+
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data, artifact_path):  # noqa: F811
+            return "B"
+
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0].function(None, None), "A")
+
+    def test_duplicate_without_override_logs_warning(self):
+        """Duplicate without override=True should log a warning."""
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            pass
+
+        with self.assertLogs("djaploy.hooks", level="WARNING") as cm:
+            @self.registry.hook("configure")
+            def my_hook(ctx):  # noqa: F811
+                pass
+
+        self.assertTrue(any("already registered" in msg for msg in cm.output))
+
+    def test_duplicate_with_override_suppresses_warning(self):
+        """Duplicate with override=True should not log a warning."""
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            pass
+
+        # Should not produce any warning log
+        import logging
+        logger = logging.getLogger("djaploy.hooks")
+        with patch.object(logger, "warning") as mock_warn:
+            @self.registry.hook("configure", override=True)
+            def my_hook(ctx):  # noqa: F811
+                pass
+
+        mock_warn.assert_not_called()
+
+    def test_a_no_override_b_override_c_override(self):
+        """A(no override), B(override), C(override) — A always wins, no warnings from B and C."""
+        calls = []
+
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data):
+            calls.append("A")
+
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):  # noqa: F811
+            calls.append("B")
+
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):  # noqa: F811
+            calls.append("C")
+
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        hooks[0].function(None)
+        self.assertEqual(calls, ["A"])
+
+    def test_different_names_are_independent(self):
+        """Hooks with different function names coexist regardless of override."""
+        calls = []
+
+        @self.registry.hook("configure")
+        def hook_a(ctx):
+            calls.append("A")
+
+        @self.registry.hook("configure")
+        def hook_b(ctx):
+            calls.append("B")
+
+        self.registry.call("configure", {})
+        self.assertEqual(calls, ["A", "B"])
+
+
 class TestDiscovery(unittest.TestCase):
     """Test hook file discovery from app infra/ directories."""
 
