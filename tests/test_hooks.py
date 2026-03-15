@@ -150,13 +150,12 @@ class TestHookOverride(unittest.TestCase):
 
         self.assertTrue(any("already registered" in msg for msg in cm.output))
 
-    def test_duplicate_with_override_suppresses_warning(self):
-        """Duplicate with override=True should not log a warning."""
+    def test_duplicate_with_override_on_duplicate_suppresses_warning(self):
+        """Duplicate with override=True on the duplicate should suppress warning."""
         @self.registry.hook("configure")
         def my_hook(ctx):
             pass
 
-        # Should not produce any warning log
         import logging
         logger = logging.getLogger("djaploy.hooks")
         with patch.object(logger, "warning") as mock_warn:
@@ -165,6 +164,27 @@ class TestHookOverride(unittest.TestCase):
                 pass
 
         mock_warn.assert_not_called()
+
+    def test_override_on_first_suppresses_warning_for_later_duplicates(self):
+        """override=True on the FIRST registration suppresses warnings for all later duplicates."""
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):
+            return "winner"
+
+        # Later duplicate WITHOUT override — should NOT warn because the winner has override
+        import logging
+        logger = logging.getLogger("djaploy.hooks")
+        with patch.object(logger, "warning") as mock_warn:
+            @self.registry.deploy_hook("deploy:configure")
+            def deploy_nginx(host_data):  # noqa: F811
+                return "loser"
+
+        mock_warn.assert_not_called()
+
+        # Winner still runs
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0].function(None), "winner")
 
     def test_a_no_override_b_override_c_override(self):
         """A(no override), B(override), C(override) — A always wins, no warnings from B and C."""

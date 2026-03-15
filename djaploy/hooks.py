@@ -50,6 +50,9 @@ class HookRegistry:
     def __init__(self):
         self._hooks: Dict[str, List[Callable]] = {}
         self._remote_hooks: Dict[str, List[RemoteFunctionHook]] = {}
+        # Track which (phase, fn_name) pairs have override=True to suppress
+        # warnings when later duplicates arrive.
+        self._overridden: set = set()  # {(hook_name, fn_name), ...}
         self._discovered = False
 
     # ------------------------------------------------------------------
@@ -58,30 +61,31 @@ class HookRegistry:
 
     def register(self, hook_name: str, fn: Callable, *, remote: bool = False, override: bool = False) -> None:
         fn_name = fn.__name__
+        key = (hook_name, fn_name)
 
         if remote:
             hooks = self._remote_hooks.setdefault(hook_name, [])
             has_duplicate = any(h.function.__name__ == fn_name for h in hooks)
-            if has_duplicate:
-                if not override:
-                    log.warning(
-                        "Hook '%s' for phase '%s' already registered, "
-                        "ignoring duplicate from %s (use override=True to suppress)",
-                        fn_name, hook_name, fn.__module__ or "?",
-                    )
-                return  # First registration always wins
-            hooks.append(RemoteFunctionHook(function=fn))
         else:
             hooks = self._hooks.setdefault(hook_name, [])
             has_duplicate = any(h.__name__ == fn_name for h in hooks)
-            if has_duplicate:
-                if not override:
-                    log.warning(
-                        "Hook '%s' for phase '%s' already registered, "
-                        "ignoring duplicate from %s (use override=True to suppress)",
-                        fn_name, hook_name, fn.__module__ or "?",
-                    )
-                return  # First registration always wins
+
+        if has_duplicate:
+            # Warn unless either side used override=True
+            if not override and key not in self._overridden:
+                log.warning(
+                    "Hook '%s' for phase '%s' already registered, "
+                    "ignoring duplicate from %s (use override=True to suppress)",
+                    fn_name, hook_name, fn.__module__ or "?",
+                )
+            return  # First registration always wins
+
+        if override:
+            self._overridden.add(key)
+
+        if remote:
+            hooks.append(RemoteFunctionHook(function=fn))
+        else:
             hooks.append(fn)
 
     def hook(self, name: str, *, override: bool = False) -> Callable:
@@ -183,6 +187,7 @@ class HookRegistry:
         """Reset the registry.  Useful for testing."""
         self._hooks.clear()
         self._remote_hooks.clear()
+        self._overridden.clear()
         self._discovered = False
 
     def get_hook_names(self) -> List[str]:

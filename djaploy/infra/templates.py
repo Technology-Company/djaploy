@@ -27,6 +27,7 @@ ExecStart=/usr/local/bin/gunicornherder \\
     {{ app_path }}/current/.venv/bin/gunicorn \\
         --workers {{ workers }} \\
         --bind unix:/run/{{ project_name }}/{{ project_name }}.sock \\
+        --umask {{ umask }} \\
         --access-logfile - \\
         --error-logfile - \\
         --timeout {{ timeout }} \\
@@ -137,6 +138,7 @@ def build_template_context(host_data):
         # gunicorn
         "workers": gunicorn_cfg.get("workers", 2),
         "timeout": gunicorn_cfg.get("timeout", 30),
+        "umask": gunicorn_cfg.get("umask", "002"),
         "wsgi_module": gunicorn_cfg.get(
             "wsgi_module", f"{app_name}.wsgi:application"
         ),
