@@ -26,18 +26,13 @@ def _deploy_run_prepare(context):
     if context.get("skip_prepare"):
         return
 
-    from django.conf import settings
     from .discovery import find_config
 
     config_path = find_config()
     if config_path:
         prepare_script = config_path.parent / "prepare.py"
     else:
-        djaploy_dir = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
-        if djaploy_dir:
-            prepare_script = Path(djaploy_dir) / "prepare.py"
-        else:
-            return
+        return
 
     if prepare_script.exists():
         from .deploy import _run_prepare
@@ -58,7 +53,7 @@ def _deploy_create_artifact(context):
     context["_hosts"] = hosts
     artifact_conf = _get_host_conf(hosts, "artifact_conf")
 
-    print(f"Creating artifact ({mode})...", flush=True)
+    print(f"Creating {mode} artifact...", flush=True)
     temp_artifact = create_artifact(
         mode=mode,
         release_tag=release_tag,

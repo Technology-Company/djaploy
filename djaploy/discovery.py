@@ -33,6 +33,7 @@ except ImportError:
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
+
 def get_app_infra_dirs() -> List[Tuple[str, Path]]:
     """
     Get infra/ directories from all installed Django apps, in INSTALLED_APPS order.
