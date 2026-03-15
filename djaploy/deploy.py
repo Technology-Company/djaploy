@@ -157,12 +157,22 @@ def create_janitor_user(inventory_file: str, **kwargs):
 
     Connects as root and bootstraps the SSH user with password and
     sudo access.  Typically the first command run on a fresh server.
+
+    Requires ``djaploy.apps.janitor`` in INSTALLED_APPS.
     """
+    from .discovery import find_command
+
+    command_file = find_command("createjanitoruser")
+    if not command_file:
+        raise RuntimeError(
+            "Command 'createjanitoruser' not found. "
+            "Add 'djaploy.apps.janitor' to INSTALLED_APPS."
+        )
     env_name = Path(inventory_file).stem
     run_command({
         "command": "createjanitoruser",
         "env": env_name,
-        "command_file": str(_get_command_file("createjanitoruser")),
+        "command_file": str(command_file),
         "inventory_file": inventory_file,
         "pyinfra_data": _build_pyinfra_data(env_name),
     })
