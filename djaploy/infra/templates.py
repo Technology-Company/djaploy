@@ -19,10 +19,10 @@ Type=simple
 User={{ app_user }}
 Group={{ app_user }}
 RuntimeDirectory={{ project_name }}
-WorkingDirectory={{ app_path }}/current
+WorkingDirectory={{ app_path }}/current{% if manage_subdir %}/{{ manage_subdir }}{% endif %}
 ExecStart=/usr/local/bin/gunicornherder \\
     --pidfile /run/{{ project_name }}/gunicorn.pid \\
-    --app-dir {{ app_path }}/current \\
+    --app-dir {{ app_path }}/current{% if manage_subdir %}/{{ manage_subdir }}{% endif %} \\
     -- \\
     {{ app_path }}/current/.venv/bin/gunicorn \\
         --workers {{ workers }} \\
@@ -51,7 +51,7 @@ Type=simple
 User={{ app_user }}
 Group={{ app_user }}
 RuntimeDirectory={{ project_name }}
-WorkingDirectory={{ app_path }}
+WorkingDirectory={{ app_path }}{% if manage_subdir %}/{{ manage_subdir }}{% endif %}
 ExecStart=/home/{{ app_user }}/.local/bin/poetry run gunicorn \\
     --workers {{ workers }} \\
     --bind unix:/run/{{ project_name }}/{{ project_name }}.sock \\
@@ -114,6 +114,7 @@ server {
 def build_template_context(host_data):
     """Build the full Jinja2 context dict from host_data."""
     from djaploy.infra.utils import is_zero_downtime, get_app_path
+    import posixpath
 
     app_user = getattr(host_data, 'app_user', 'app')
     app_name = getattr(host_data, 'app_name', None)
@@ -123,6 +124,27 @@ def build_template_context(host_data):
 
     gunicorn_cfg = getattr(host_data, 'gunicorn_conf', None) or {}
     nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+
+    # Derive working directory from manage_py_path.
+    # "manage.py" → "" (release root), "bostad/manage.py" → "bostad"
+    manage_py_path = getattr(host_data, 'manage_py_path', 'manage.py')
+    manage_subdir = posixpath.dirname(manage_py_path)
+
+    # Derive WSGI module: check gunicorn_conf, then Django's WSGI_APPLICATION,
+    # then fall back to {app_name}.wsgi:application.
+    wsgi_module = gunicorn_cfg.get("wsgi_module")
+    if not wsgi_module:
+        try:
+            from django.conf import settings as django_settings
+            wsgi_app = getattr(django_settings, 'WSGI_APPLICATION', None)
+            if wsgi_app:
+                # "bostad.wsgi.application" → "bostad.wsgi:application"
+                parts = wsgi_app.rsplit('.', 1)
+                wsgi_module = f"{parts[0]}:{parts[1]}" if len(parts) == 2 else wsgi_app
+        except Exception:
+            pass
+    if not wsgi_module:
+        wsgi_module = f"{app_name}.wsgi:application"
 
     if is_zero_downtime(host_data):
         static_path = f"{app_path}/shared/staticfiles"
@@ -135,13 +157,12 @@ def build_template_context(host_data):
         "project_name": app_name,
         "app_user": app_user,
         "app_path": app_path,
+        "manage_subdir": manage_subdir,
         # gunicorn
         "workers": gunicorn_cfg.get("workers", 2),
         "timeout": gunicorn_cfg.get("timeout", 30),
         "umask": gunicorn_cfg.get("umask", "002"),
-        "wsgi_module": gunicorn_cfg.get(
-            "wsgi_module", f"{app_name}.wsgi:application"
-        ),
+        "wsgi_module": wsgi_module,
         # nginx
         "server_name": nginx_cfg.get("server_name", "_"),
         "listen": nginx_cfg.get("listen", "80 default_server"),
