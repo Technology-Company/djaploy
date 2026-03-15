@@ -99,6 +99,9 @@ class HookRegistry:
         # Load built-in hooks (notifications, tagging) before app hooks
         self._load_builtin_hooks()
 
+        # Load hooks from djaploy's built-in apps (janitor, nginx, systemd, etc.)
+        self._load_djaploy_apps()
+
         try:
             from .discovery import get_app_infra_dirs
         except (ImportError, ModuleNotFoundError):
@@ -112,6 +115,18 @@ class HookRegistry:
                 self._load_hooks_file(hooks_file, app_label)
 
         self._discovered = True
+
+    def _load_djaploy_apps(self) -> None:
+        """Load hooks from djaploy/apps/*/infra/djaploy_hooks.py."""
+        apps_dir = Path(__file__).parent / "apps"
+        if not apps_dir.is_dir():
+            return
+        for app_dir in sorted(apps_dir.iterdir()):
+            if not app_dir.is_dir() or app_dir.name.startswith("_"):
+                continue
+            hooks_file = app_dir / "infra" / "djaploy_hooks.py"
+            if hooks_file.is_file():
+                self._load_hooks_file(hooks_file, f"djaploy_{app_dir.name}")
 
     def _load_builtin_hooks(self) -> None:
         try:
