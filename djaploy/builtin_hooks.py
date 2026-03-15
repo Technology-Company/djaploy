@@ -29,15 +29,16 @@ def _deploy_run_prepare(context):
     from .discovery import find_config
 
     config_path = find_config()
-    if config_path:
-        prepare_script = config_path.parent / "prepare.py"
-    else:
+    if not config_path:
         return
 
-    if prepare_script.exists():
-        from .deploy import _run_prepare
-        print("Running prepare script...", flush=True)
-        _run_prepare(prepare_script)
+    prepare_script = config_path.parent / "prepare.py"
+    if not prepare_script.exists():
+        return
+
+    from .deploy import _run_prepare
+    print("Running prepare script...", flush=True)
+    _run_prepare(prepare_script)
 
 
 @hook("deploy:precommand")
@@ -49,6 +50,7 @@ def _deploy_create_artifact(context):
     mode = context.get("mode", "latest")
     release_tag = context.get("release") if mode == "release" else None
 
+    print("Loading inventory...", flush=True)
     hosts = context.get("_hosts") or _load_inventory_hosts(context["inventory_file"])
     context["_hosts"] = hosts
     artifact_conf = _get_host_conf(hosts, "artifact_conf")
