@@ -34,6 +34,8 @@ def override_inventory_to_root(context):
         sys.modules.pop("_janitor_inv", None)
 
     # Write a temp inventory with ssh_user forced to root
+    from djaploy.deploy import _make_value_serializable
+
     fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="janitor_inv_")
     with os.fdopen(fd, "w") as f:
         f.write("# Auto-generated inventory (ssh_user overridden to root)\n\n")
@@ -44,7 +46,8 @@ def override_inventory_to_root(context):
                 data = dict(data)
                 data["_original_ssh_user"] = data.get("ssh_user", "deploy")
                 data["ssh_user"] = "root"
-                f.write(f"    ({repr(name)}, {repr(data)}),\n")
+                safe_data = {k: _make_value_serializable(v) for k, v in data.items()}
+                f.write(f"    ({repr(name)}, {repr(safe_data)}),\n")
             else:
                 f.write(f"    {repr(host_entry)},\n")
         f.write("]\n")
