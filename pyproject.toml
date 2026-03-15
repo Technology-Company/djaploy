@@ -1,6 +1,6 @@
 [project]
 name = "djaploy"
-version = "0.9.10"
+version = "1.0.0"
 description = "Modular Django deployment system based on pyinfra"
 authors = [
     {name = "Johanna Mae Dimayuga", email = "johanna@techco.fi"}
@@ -10,7 +10,7 @@ requires-python = ">=3.9"
 license = {file = "LICENSE"}
 keywords = ["django", "deployment", "pyinfra", "automation", "infrastructure"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Framework :: Django",
     "Framework :: Django :: 3.2",
