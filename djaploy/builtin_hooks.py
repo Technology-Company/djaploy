@@ -24,12 +24,14 @@ from .hooks import hook
 def _deploy_run_prepare(context):
     """Run the prepare.py script before artifact creation."""
     if context.get("skip_prepare"):
+        print("Skipping prepare script", flush=True)
         return
 
     from .discovery import find_config
 
     config_path = find_config()
     if not config_path:
+        print("No config found, skipping prepare", flush=True)
         return
 
     prepare_script = config_path.parent / "prepare.py"
@@ -39,6 +41,7 @@ def _deploy_run_prepare(context):
     from .deploy import _run_prepare
     print("Running prepare script...", flush=True)
     _run_prepare(prepare_script)
+    print("Prepare script done", flush=True)
 
 
 @hook("deploy:precommand")
