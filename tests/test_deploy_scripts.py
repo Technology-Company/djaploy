@@ -1,162 +1,247 @@
-"""Tests for deployment script generation (deploy.py)"""
+"""Tests for deployment orchestration (deploy.py) and command files."""
 
+import ast
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from djaploy.config import DjaployConfig
-from djaploy.deploy import _generate_rollback_script
+from djaploy.config import HostConfig
+from djaploy.hooks import HookRegistry
 
 
-class TestRollbackScriptGeneration(unittest.TestCase):
-    """Test the generated pyinfra rollback scripts"""
+class TestCommandFilesAreSyntacticallyValid(unittest.TestCase):
+    """Verify that all command files in djaploy/commands/ parse correctly."""
 
-    def _make_config(self, **kwargs):
-        defaults = dict(
-            project_name="myapp",
-            djaploy_dir="/home/me/myapp/infra",
-            deployment_strategy="zero_downtime",
-            app_user="myapp-api",
-        )
-        defaults.update(kwargs)
-        return DjaployConfig(**defaults)
+    commands_dir = Path(__file__).resolve().parent.parent / "djaploy" / "commands"
 
-    def _make_mock_modules(self):
-        """Create mock modules that look like real djaploy modules"""
-        core = MagicMock()
-        core.name = "core"
-        core.__class__.__name__ = "CoreModule"
-        core.__class__.__module__ = "djaploy.modules.core"
-        core.config = {}
-        core.get_required_imports.return_value = [
-            "from pyinfra import host",
-            "from pyinfra.operations import server",
-        ]
+    def _check_file(self, name):
+        path = self.commands_dir / f"{name}.py"
+        self.assertTrue(path.exists(), f"{name}.py should exist")
+        source = path.read_text()
+        # Should parse without SyntaxError
+        ast.parse(source, filename=str(path))
 
-        systemd = MagicMock()
-        systemd.name = "systemd"
-        systemd.__class__.__name__ = "SystemdModule"
-        systemd.__class__.__module__ = "djaploy.modules.systemd"
-        systemd.config = {}
-        systemd.get_required_imports.return_value = [
-            "from pyinfra.operations import systemd",
-        ]
+    def test_configure_parses(self):
+        self._check_file("configure")
 
-        return [core, systemd]
+    def test_deploy_parses(self):
+        self._check_file("deploy")
 
-    def test_rollback_to_previous_release(self):
-        config = self._make_config()
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release=None)
+    def test_restore_parses(self):
+        self._check_file("restore")
 
-        self.assertIn("release = None", script)
-        self.assertIn("module.rollback(host.data, project_config, release)", script)
-
-    def test_rollback_to_specific_release(self):
-        config = self._make_config()
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release="app-v1.2.0")
-
-        self.assertIn("'app-v1.2.0'", script)
-        self.assertIn("module.rollback(host.data, project_config, release)", script)
-
-    def test_rollback_script_calls_all_modules(self):
-        config = self._make_config()
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release=None)
-
-        self.assertIn("CoreModule", script)
-        self.assertIn("SystemdModule", script)
-        # Each module should have a rollback call
-        self.assertEqual(script.count("module.rollback("), 2)
-
-    def test_rollback_script_imports_modules(self):
-        config = self._make_config()
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release=None)
-
-        self.assertIn("from djaploy.modules.core import CoreModule", script)
-        self.assertIn("from djaploy.modules.systemd import SystemdModule", script)
-
-    def test_rollback_script_collects_imports(self):
-        config = self._make_config()
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release=None)
-
-        self.assertIn("from pyinfra import host", script)
-        self.assertIn("from pyinfra.operations import server", script)
-
-    def test_rollback_script_uses_config_paths(self):
-        config = self._make_config(djaploy_dir="/opt/project/infra")
-        modules = self._make_mock_modules()
-        script = _generate_rollback_script(config, modules, release=None)
-
-        self.assertIn("/opt/project/infra", script)
+    def test_rollback_parses(self):
+        self._check_file("rollback")
 
 
 class TestRollbackValidation(unittest.TestCase):
-    """Test rollback_project validation"""
+    """Test rollback:precommand hook rejects in_place strategy."""
+
+    def _make_inventory(self, strategy):
+        """Create a temp inventory file with the given deployment_strategy."""
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".py")
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                f"hosts = [('test-host', {{'ssh_hostname': 'localhost', "
+                f"'deployment_strategy': '{strategy}', 'app_name': 'test'}})]\n"
+            )
+        return path
 
     def test_rollback_rejects_in_place_strategy(self):
-        from djaploy.deploy import rollback_project
+        from djaploy.builtin_hooks import _rollback_validate_strategy
 
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            deployment_strategy="in_place",
-        )
+        inv = self._make_inventory("in_place")
+        try:
+            context = {"config": None, "env": "production", "inventory_file": inv}
+            with self.assertRaises(ValueError) as ctx:
+                _rollback_validate_strategy(context)
+            self.assertIn("zero_downtime", str(ctx.exception))
+        finally:
+            os.unlink(inv)
 
-        with self.assertRaises(ValueError) as ctx:
-            rollback_project(config, "/tmp/inventory.py")
-        self.assertIn("zero_downtime", str(ctx.exception))
+    def test_rollback_allows_zero_downtime(self):
+        from djaploy.builtin_hooks import _rollback_validate_strategy
+
+        inv = self._make_inventory("zero_downtime")
+        try:
+            context = {"config": None, "env": "production", "inventory_file": inv}
+            # Should not raise
+            _rollback_validate_strategy(context)
+        finally:
+            os.unlink(inv)
 
 
-class TestDeployScriptGeneration(unittest.TestCase):
-    """Test the generated pyinfra deploy scripts"""
+class TestLocalSettingsHook(unittest.TestCase):
+    """Test the deploy:local_settings hook collection."""
 
-    def _make_config(self, **kwargs):
-        defaults = dict(
-            project_name="myapp",
-            djaploy_dir="/home/me/myapp/infra",
-            app_user="myapp-api",
-        )
-        defaults.update(kwargs)
-        return DjaployConfig(**defaults)
+    def test_collect_local_settings_via_hook(self):
+        registry = HookRegistry()
 
-    def test_deploy_script_contains_artifact_path(self):
-        from djaploy.deploy import _generate_deploy_script
+        @registry.hook("deploy:local_settings")
+        def add_redis(context):
+            return 'REDIS_URL = "redis://localhost:6379/0"'
 
-        config = self._make_config()
-        mock_module = MagicMock()
-        mock_module.name = "core"
-        mock_module.__class__.__name__ = "CoreModule"
-        mock_module.__class__.__module__ = "djaploy.modules.core"
-        mock_module.config = {}
-        mock_module.get_required_imports.return_value = [
-            "from pyinfra import host",
-        ]
+        @registry.hook("deploy:local_settings")
+        def add_celery(context):
+            return "CELERY_BROKER_URL = REDIS_URL"
 
-        script = _generate_deploy_script(config, [mock_module], Path("/tmp/myapp.abc1234.tar.gz"))
+        ctx = {"env": "production", "config": None}
+        results = registry.call("deploy:local_settings", ctx)
 
-        self.assertIn("/tmp/myapp.abc1234.tar.gz", script)
-        self.assertIn("artifact_path", script)
+        self.assertEqual(len(results), 2)
+        self.assertIn('REDIS_URL = "redis://localhost:6379/0"', results)
+        self.assertIn("CELERY_BROKER_URL = REDIS_URL", results)
 
-    def test_configure_script_has_module_calls(self):
-        from djaploy.deploy import _generate_configure_script
 
-        config = self._make_config()
-        mock_module = MagicMock()
-        mock_module.name = "core"
-        mock_module.__class__.__name__ = "CoreModule"
-        mock_module.__class__.__module__ = "djaploy.modules.core"
-        mock_module.config = {}
-        mock_module.get_required_imports.return_value = []
+class TestGetCommandFile(unittest.TestCase):
+    """Test the _get_command_file helper."""
 
-        script = _generate_configure_script(config, [mock_module])
+    def test_returns_path_for_known_commands(self):
+        from djaploy.deploy import _get_command_file
 
-        self.assertIn("pre_configure", script)
-        self.assertIn("configure_server", script)
-        self.assertIn("post_configure", script)
+        for name in ("deploy", "configure", "restore", "rollback"):
+            path = _get_command_file(name)
+            self.assertTrue(path.exists(), f"Command file for '{name}' should exist")
+            self.assertEqual(path.suffix, ".py")
+
+    def test_returns_path_for_unknown_command(self):
+        from djaploy.deploy import _get_command_file
+
+        path = _get_command_file("nonexistent")
+        self.assertFalse(path.exists())
+
+
+class TestRunCommandBuildsContext(unittest.TestCase):
+    """Test that Python API wrappers build context correctly."""
+
+    @patch("djaploy.deploy._build_pyinfra_data", return_value={"env": "inventory"})
+    def test_deploy_project_builds_context_with_all_fields(self, _mock_data):
+        captured_context = {}
+
+        def mock_run_command(ctx):
+            captured_context.update(ctx)
+
+        with patch("djaploy.deploy.run_command", side_effect=mock_run_command):
+            from djaploy.deploy import deploy_project
+            deploy_project(
+                "/tmp/inventory.py",
+                mode="release",
+                release_tag="v1.0.0",
+                skip_prepare=True,
+                version_bump="minor",
+            )
+
+        self.assertEqual(captured_context["command"], "deploy")
+        self.assertEqual(captured_context["mode"], "release")
+        self.assertEqual(captured_context["release"], "v1.0.0")
+        self.assertEqual(captured_context["version_bump"], "minor")
+        self.assertTrue(captured_context["skip_prepare"])
+
+    @patch("djaploy.deploy._build_pyinfra_data", return_value={"env": "inventory"})
+    def test_rollback_project_builds_context(self, _mock_data):
+        captured_context = {}
+
+        def mock_run_command(ctx):
+            captured_context.update(ctx)
+
+        with patch("djaploy.deploy.run_command", side_effect=mock_run_command):
+            from djaploy.deploy import rollback_project
+            rollback_project("/tmp/inventory.py", release="app-v1.2.0")
+
+        self.assertEqual(captured_context["command"], "rollback")
+        self.assertEqual(captured_context["release"], "app-v1.2.0")
+        self.assertEqual(captured_context["pyinfra_data"]["release"], "app-v1.2.0")
+
+
+class TestLifecycleHookOrder(unittest.TestCase):
+    """Test the 4-hook lifecycle: {cmd}:precommand, precommand, {cmd}:postcommand, postcommand."""
+
+    def _run_with_registry(self, registry, context, pyinfra_side_effect=None):
+        """Helper: run_command with a custom registry and mocked pyinfra."""
+        with patch("djaploy.hooks.discover_hooks"), \
+             patch("djaploy.hooks.call_hook", side_effect=registry.call), \
+             patch("djaploy.deploy._preprocess_inventory", return_value="/dev/null"), \
+             patch("djaploy.deploy._run_pyinfra", side_effect=pyinfra_side_effect):
+            from djaploy.deploy import run_command
+            run_command(context)
+
+    def test_success_lifecycle(self):
+        registry = HookRegistry()
+        order = []
+
+        @registry.hook("mytest:precommand")
+        def h1(ctx): order.append("mytest:precommand")
+
+        @registry.hook("precommand")
+        def h2(ctx): order.append("precommand")
+
+        @registry.hook("mytest:postcommand")
+        def h3(ctx): order.append("mytest:postcommand")
+
+        @registry.hook("postcommand")
+        def h4(ctx): order.append("postcommand")
+
+        context = {
+            "command": "mytest",
+            "config": MagicMock(),
+            "env": "test",
+            "command_file": "/dev/null",
+            "inventory_file": "/dev/null",
+            "pyinfra_data": {},
+        }
+
+        self._run_with_registry(registry, context)
+
+        self.assertEqual(order, [
+            "mytest:precommand",
+            "precommand",
+            "mytest:postcommand",
+            "postcommand",
+        ])
+        self.assertTrue(context["success"])
+
+    def test_failure_lifecycle(self):
+        registry = HookRegistry()
+        order = []
+
+        @registry.hook("boom:precommand")
+        def h1(ctx): order.append("boom:precommand")
+
+        @registry.hook("precommand")
+        def h2(ctx): order.append("precommand")
+
+        @registry.hook("boom:postcommand")
+        def h3(ctx): order.append("boom:postcommand")
+
+        @registry.hook("postcommand")
+        def h4(ctx): order.append("postcommand")
+
+        context = {
+            "command": "boom",
+            "config": MagicMock(),
+            "env": "test",
+            "command_file": "/dev/null",
+            "inventory_file": "/dev/null",
+            "pyinfra_data": {},
+        }
+
+        with self.assertRaises(RuntimeError):
+            self._run_with_registry(
+                registry, context,
+                pyinfra_side_effect=RuntimeError("kaboom"),
+            )
+
+        # postcommand hooks still fire on failure
+        self.assertEqual(order, [
+            "boom:precommand",
+            "precommand",
+            "boom:postcommand",
+            "postcommand",
+        ])
+        self.assertFalse(context["success"])
+        self.assertIsInstance(context["error"], RuntimeError)
 
 
 if __name__ == "__main__":

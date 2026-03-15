@@ -11,11 +11,13 @@ import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 from django.conf import settings
 from django.core.management import BaseCommand, CommandError
 
-from djaploy.management.utils import load_config, load_inventory
+from djaploy.deploy import _load_inventory_hosts
+from djaploy.discovery import find_inventory
 
 
 class Command(BaseCommand):
@@ -59,12 +61,6 @@ class Command(BaseCommand):
             help="List available backup dates and exit.",
         )
         parser.add_argument(
-            "--config",
-            type=str,
-            default=None,
-            help="Path to djaploy configuration file (overrides settings)",
-        )
-        parser.add_argument(
             "--inventory-dir",
             type=str,
             default=None,
@@ -74,11 +70,17 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         env = options["env"]
         target = options["target"]
-        config = load_config(options["config"])
-        inventory_dir = options["inventory_dir"] or str(config.get_inventory_dir())
 
-        # Load source environment (where BackupConfig lives)
-        source_hosts = load_inventory(inventory_dir, env)
+        # Resolve inventory file
+        if options["inventory_dir"]:
+            inv_file = str(Path(options["inventory_dir"]) / f"{env}.py")
+        else:
+            inv_path = find_inventory(env)
+            if not inv_path:
+                raise CommandError(f"Inventory not found for environment '{env}'")
+            inv_file = str(inv_path)
+
+        source_hosts = _load_inventory_hosts(inv_file)
         if not source_hosts:
             raise CommandError(f"No hosts found in {env} inventory.")
 
@@ -95,7 +97,8 @@ class Command(BaseCommand):
         if target == "local":
             self._handle_local(options, backup_config, host_name)
         else:
-            self._handle_server(options, config, inventory_dir, target, host_name)
+            inventory_dir = str(Path(inv_file).parent) if options["inventory_dir"] is None else options["inventory_dir"]
+            self._handle_server(options, inventory_dir, target, host_name)
 
     # ── Local restore ────────────────────────────────────────────────
 
@@ -181,7 +184,7 @@ class Command(BaseCommand):
 
     # ── Server restore (via pyinfra) ─────────────────────────────────
 
-    def _handle_server(self, options, config, inventory_dir, target, backup_host_name):
+    def _handle_server(self, options, inventory_dir, target, backup_host_name):
         """Restore on a remote server using pyinfra and the rclone module."""
         from pathlib import Path
 
@@ -193,7 +196,7 @@ class Command(BaseCommand):
 
         # For --list, fall back to local rclone since we just need to query the storage box
         if options["list_backups"]:
-            target_hosts = load_inventory(inventory_dir, target)
+            target_hosts = _load_inventory_hosts(target_inventory_file)
             if not target_hosts:
                 raise CommandError(f"No hosts found in {target} inventory.")
             backup_config = target_hosts[0][1].get("backup")
@@ -209,7 +212,7 @@ class Command(BaseCommand):
         # Determine backup date
         date = options["date"]
         if not date:
-            target_hosts = load_inventory(inventory_dir, target)
+            target_hosts = _load_inventory_hosts(target_inventory_file)
             if not target_hosts:
                 raise CommandError(f"No hosts found in {target} inventory.")
             backup_config = target_hosts[0][1].get("backup")
@@ -232,7 +235,7 @@ class Command(BaseCommand):
         }
 
         try:
-            restore_from_backup(config, target_inventory_file, restore_opts)
+            restore_from_backup(target_inventory_file, restore_opts)
             self.stdout.write(self.style.SUCCESS(f"Server restore completed on {target}."))
         except Exception as e:
             raise CommandError(f"Restore failed: {e}")

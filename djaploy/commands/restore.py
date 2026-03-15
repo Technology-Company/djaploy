@@ -1,0 +1,30 @@
+"""
+Pyinfra command: restore from backup.
+
+Discovers and runs all @deploy_hook functions for the restore phases.
+
+Usage (via djaploy management command):
+    manage.py djaploy restore --env production
+"""
+
+from pyinfra import host
+from pyinfra.api import deploy as _deploy_decorator
+
+from djaploy.hooks import discover_hooks, get_registry
+
+discover_hooks()
+registry = get_registry()
+
+restore_opts = {
+    "backup_host_name": getattr(host.data, "backup_host_name", ""),
+    "date": getattr(host.data, "date", ""),
+    "db_only": getattr(host.data, "db_only", "false").lower() == "true"
+    if isinstance(getattr(host.data, "db_only", False), str)
+    else bool(getattr(host.data, "db_only", False)),
+}
+
+for phase in ("restore:pre", "restore", "restore:post"):
+    for hook in registry.get_remote_hooks(phase):
+        _deploy_decorator(hook.function.__name__)(hook.function)(
+            host.data, restore_opts
+        )

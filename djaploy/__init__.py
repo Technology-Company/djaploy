@@ -2,8 +2,8 @@
 djaploy - Modular Django deployment system based on pyinfra
 """
 
-from .config import DjaployConfig
-from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project
+from .config import HostConfig
+from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project, create_janitor_user, run_command
 from .version import __version__
 
 # Versioning utilities
@@ -33,13 +33,24 @@ from .notifications import (
     get_notification_backend,
 )
 
+# Hooks
+from .hooks import (
+    hook,
+    deploy_hook,
+    call_hook,
+    get_remote_hooks,
+    discover_hooks,
+)
+
 __all__ = [
     # Core
-    "DjaployConfig",
+    "HostConfig",
     "deploy_project",
     "configure_server",
     "rollback_project",
     "restore_from_backup",
+    "create_janitor_user",
+    "run_command",
     "__version__",
     # Versioning
     "get_latest_version_tag",
@@ -59,4 +70,10 @@ __all__ = [
     "SlackNotificationBackend",
     "WebhookNotificationBackend",
     "get_notification_backend",
+    # Hooks
+    "hook",
+    "deploy_hook",
+    "call_hook",
+    "get_remote_hooks",
+    "discover_hooks",
 ]

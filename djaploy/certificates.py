@@ -14,9 +14,6 @@ import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .config import DjaployConfig
-
 from .utils import StringLike
 
 
@@ -271,26 +268,16 @@ class BunnyDnsCertificate(DnsCertificate):
         dns_propagate_wait_seconds: int = 10,
         bunny_api_key_secret: str = None,
         git_dir: str = None,
-        project_config = None
     ):
         """Issue certificate using Bunny DNS"""
         if git_dir is None:
             git_dir = os.getcwd()
         
-        # Get bunny API key from project config or parameter
+        # Get bunny API key
         if bunny_api_key_secret is None:
-            if project_config and hasattr(project_config, 'module_configs'):
-                # Try to get from module config
-                bunny_config = project_config.module_configs.get('bunny', {})
-                bunny_api_key_secret = bunny_config.get('api_key')
-
-
-            # If still None, raise an error
-            if bunny_api_key_secret is None:
-                raise ValueError(
-                    "bunny api_key is required. Either pass it as a parameter or "
-                    "configure it in project_config.module_configs['bunny']['api_key']"
-                )
+            raise ValueError(
+                "bunny api_key is required. Pass it as a parameter."
+            )
             
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
@@ -384,24 +371,18 @@ class SshHttpHook:
     Configuration precedence (highest to lowest):
     1. Instance-level (passed to SshHttpHook.__init__)
     2. Host-level (in HostConfig's http_hook dict)
-    3. Project-level (DjaployConfig.module_configs['http_hook'])
+    3. Instance-level overrides (passed to SshHttpHook constructor)
     4. Defaults
 
-    Example usage in project config:
-        module_configs={
-            'http_hook': {
-                'webroot_path': '/var/www/challenges',
-                'use_sudo': True,
-                'file_group': 'www-data',
-            },
-        }
+    Example usage in inventory::
 
-    Example usage in inventory:
         HostConfig(
             'my-server',
             ssh_hostname='...',
-            http_hook={
+            http_hook_conf={
                 'webroot_path': '/custom/path',
+                'use_sudo': True,
+                'file_group': 'www-data',
             },
         )
     """
@@ -411,7 +392,6 @@ class SshHttpHook:
     def __init__(
         self,
         djaploy_dir: Path = None,
-        project_config: "DjaployConfig" = None,
         # Overridable settings
         webroot_path: str = None,
         use_sudo: bool = None,
@@ -424,7 +404,6 @@ class SshHttpHook:
 
         Args:
             djaploy_dir: Path to the djaploy configuration directory (contains inventory/)
-            project_config: DjaployConfig instance for project-level settings
             webroot_path: Web server path where challenges are served from
             use_sudo: Whether to use sudo for file operations
             file_owner: Owner for challenge files (defaults to host's ssh_user)
@@ -432,7 +411,6 @@ class SshHttpHook:
             file_mode: Permission mode for challenge files
         """
         self.djaploy_dir = Path(djaploy_dir) if djaploy_dir else None
-        self.project_config = project_config
 
         # Instance-level overrides
         self._webroot_path = webroot_path
@@ -495,13 +473,10 @@ class SshHttpHook:
         inventory_dir = None
         if self.djaploy_dir:
             inventory_dir = self.djaploy_dir / 'inventory'
-        elif self.project_config and self.project_config.djaploy_dir:
-            inventory_dir = self.project_config.djaploy_dir / 'inventory'
 
         if not inventory_dir or not inventory_dir.exists():
             raise ValueError(
-                f"Cannot find inventory directory. "
-                f"Provide djaploy_dir or project_config with djaploy_dir set."
+                f"Cannot find inventory directory. Provide djaploy_dir."
             )
 
         # Scan all inventory files
@@ -558,15 +533,8 @@ class SshHttpHook:
             'file_mode': '0644',
         }
 
-        # Layer 1: Project-level config
-        if self.project_config:
-            hook_config = self.project_config.module_configs.get('http_hook', {})
-            for k, v in hook_config.items():
-                if v is not None:
-                    config[k] = v
-
-        # Layer 2: Host-level config
-        host_hook_config = host_data.get('http_hook', {})
+        # Host-level config (from http_hook_conf on HostConfig)
+        host_hook_config = host_data.get('http_hook_conf') or host_data.get('http_hook', {})
         if isinstance(host_hook_config, dict):
             for k, v in host_hook_config.items():
                 if v is not None:
@@ -728,7 +696,7 @@ class LetsEncryptCertificate(DnsCertificate):
         webroot_path: str = None,
         is_staging: bool = True,
         git_dir: str = None,
-        project_config: "DjaployConfig" = None,
+        djaploy_dir: Path = None,
         use_ssh_hook: bool = None,
     ):
         """
@@ -744,17 +712,13 @@ class LetsEncryptCertificate(DnsCertificate):
             webroot_path: Path to webroot for challenge files
             is_staging: Use Let's Encrypt staging environment
             git_dir: Directory for certbot files (defaults to cwd)
-            project_config: DjaployConfig for project-level settings
+            djaploy_dir: Path to djaploy config directory (for SSH hook auto-creation)
             use_ssh_hook: Force SSH hook mode even without http_hook set.
-                         If True and no http_hook is set, creates one from project_config.
         """
         if git_dir is None:
             git_dir = os.getcwd()
 
-        # Get webroot from project config if not provided
-        if webroot_path is None and project_config:
-            webroot_path = getattr(project_config, 'letsencrypt_webroot', '/var/www/challenges')
-        elif webroot_path is None:
+        if webroot_path is None:
             webroot_path = '/var/www/challenges'
 
         # Setup certbot directory
@@ -763,21 +727,10 @@ class LetsEncryptCertificate(DnsCertificate):
 
         # Determine if we should use SSH hook mode
         http_hook = self.http_hook
-        if use_ssh_hook and not http_hook and project_config:
-            # Auto-create SshHttpHook from project config
-            http_hook = SshHttpHook(
-                djaploy_dir=project_config.djaploy_dir,
-                project_config=project_config,
-            )
+        if use_ssh_hook and not http_hook and djaploy_dir:
+            http_hook = SshHttpHook(djaploy_dir=djaploy_dir)
 
         if http_hook:
-            # SSH hook mode - generate hook scripts
-            print(f"Issuing certificate using SSH HTTP hook")
-            print(f"  Domains: {', '.join(self.domains)}")
-
-            # Pass project_config to hook if not already set
-            if not http_hook.project_config and project_config:
-                http_hook.project_config = project_config
 
             # Generate hook scripts (use first domain for host resolution)
             primary_domain = self.domains[0]

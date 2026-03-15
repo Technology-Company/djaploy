@@ -37,13 +37,16 @@ def main():
 
     # Import and run pyinfra CLI.
     try:
-        from pyinfra_cli import __main__ as pyinfra_main
-    except ImportError as exc:
-        print(f"Error: Could not import pyinfra CLI: {exc}")
-        print("Make sure pyinfra is installed in your environment.")
-        return 1
+        from pyinfra_cli.main import main as pyinfra_main
+    except ImportError:
+        try:
+            from pyinfra_cli.__main__ import main as pyinfra_main
+        except ImportError as exc:
+            print(f"Error: Could not import pyinfra CLI: {exc}")
+            print("Make sure pyinfra is installed in your environment.")
+            return 1
 
-    return pyinfra_main.main()
+    return pyinfra_main()
 
 if __name__ == '__main__':
     raise SystemExit(main())

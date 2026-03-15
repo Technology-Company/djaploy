@@ -1,11 +1,13 @@
 """
-Configuration management for djaploy
+Configuration management for djaploy.
+
+All deployment configuration lives on HostConfig.  Project-level settings
+(GIT_DIR, BASE_DIR, ARTIFACT_DIR) come from Django settings.
 """
 
 import typing
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional, get_origin
-from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
 
 
 class HostConfigMetaclass(type):
@@ -29,174 +31,6 @@ def is_optional(field):
     """Check if a type hint is Optional"""
     return typing.get_origin(field) is typing.Union and \
            type(None) in typing.get_args(field)
-
-
-@dataclass
-class DjaployConfig:
-    """Main configuration class for djaploy deployments"""
-    
-    # Project settings
-    project_name: str
-    project_dir: Optional[Path] = None
-    git_dir: Optional[Path] = None
-    
-    # Djaploy directory settings
-    djaploy_dir: Optional[Path] = None  # Contains config.py, deploy_files/, inventory/
-    manage_py_path: Optional[Path] = None  # Relative project path to manage.py file
-    
-    # Server settings
-    app_user: str = "app"
-    ssh_user: str = "deploy"
-    
-    # Python settings
-    python_version: str = "3.11"
-    python_compile: bool = False  # Whether to compile Python from source
-    
-    # Modules to enable
-    modules: List[str] = field(default_factory=lambda: [
-        "djaploy.modules.core",
-        "djaploy.modules.nginx",
-        "djaploy.modules.systemd"
-    ])
-
-    # Modules to use for sync_certs command
-    sync_certs_modules: List[str] = field(default_factory=lambda: [
-        "djaploy.modules.sync_certs",
-    ])
-
-    # Module configurations
-    module_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    
-    # Deployment settings
-    artifact_dir: str = "deployment"
-    deployment_strategy: str = "in_place"  # "in_place" or "zero_downtime"
-    keep_releases: int = 5  # Number of releases to keep (zero_downtime only)
-    # Paths (relative to git/artifact root) to symlink from shared/ into each release.
-    # When None (default), auto-detected from Django settings (STATIC_ROOT,
-    # MEDIA_ROOT, PRIVATE_MEDIA_ROOT). Set explicitly to override or to [] to disable.
-    # Note: venv is shared implicitly via the stable current/ symlink path.
-    shared_resources: Optional[List[str]] = None
-    # External database directory. Created during configure_server with correct
-    # ownership. Use this to keep databases outside the app dir so they survive
-    # release switching. Set to None to skip.
-    # Example: "/home/{app_user}/dbs/{project_name}" (placeholders resolved at runtime)
-    db_dir: Optional[str] = None
-    
-    # SSL settings
-    ssl_enabled: bool = False
-    letsencrypt_webroot: str = "/var/www/challenges"
-    
-    def __post_init__(self):
-        """Post-initialization processing"""
-        # Convert to Path objects if needed
-        if self.project_dir is not None:
-            self.project_dir = Path(self.project_dir)
-        
-        if self.git_dir is not None:
-            self.git_dir = Path(self.git_dir)
-            
-        # Convert djaploy_dir to Path if specified
-        if self.djaploy_dir is not None:
-            self.djaploy_dir = Path(self.djaploy_dir)
-            
-        # Convert manage_py_path to Path if specified
-        if self.manage_py_path is not None:
-            self.manage_py_path = Path(self.manage_py_path)
-        
-        # Auto-detect shared_resources from Django settings if not explicitly set
-        if self.shared_resources is None:
-            self.shared_resources = self._resolve_shared_resources()
-
-        # Add SSL module if SSL is enabled
-        if self.ssl_enabled and "djaploy.modules.ssl" not in self.modules:
-            self.modules.append("djaploy.modules.ssl")
-
-        if "djaploy.modules.tailscale" in self.modules and "djaploy.modules.tailscale" not in self.sync_certs_modules:
-            self.sync_certs_modules.insert(0, "djaploy.modules.tailscale")
-    
-    def _resolve_shared_resources(self) -> List[str]:
-        """Auto-detect shared resources from Django settings.
-
-        Resolves STATIC_ROOT, MEDIA_ROOT and PRIVATE_MEDIA_ROOT relative to
-        git_dir (the artifact/release root). Only includes paths that are
-        inside the project directory (paths outside don't need symlinking).
-        """
-        resources = []
-        try:
-            from django.conf import settings as django_settings
-            if not django_settings.configured:
-                return resources
-
-            # Resolve relative to git_dir (artifact root) so paths match
-            # the release directory structure, not BASE_DIR which may be
-            # a subdirectory of the artifact.
-            artifact_root = self.git_dir or self.project_dir
-            if artifact_root is None:
-                return resources
-
-            for setting_name in ('STATIC_ROOT', 'MEDIA_ROOT', 'PRIVATE_MEDIA_ROOT'):
-                value = getattr(django_settings, setting_name, None)
-                if value:
-                    abs_path = Path(value)
-                    try:
-                        rel = str(abs_path.relative_to(artifact_root))
-                        resources.append(rel)
-                    except ValueError:
-                        pass  # Outside artifact root, no symlink needed
-        except Exception:
-            pass
-        return resources
-
-    def resolve_db_dir(self, app_user: str = None) -> Optional[str]:
-        """Resolve db_dir template with actual values.
-
-        Args:
-            app_user: Override app_user (e.g. from host_data)
-
-        Returns:
-            Resolved path string, or None if db_dir is not set.
-        """
-        if not self.db_dir:
-            return None
-        user = app_user or self.app_user
-        return self.db_dir.format(
-            app_user=user,
-            project_name=self.project_name,
-        )
-
-    def get_deploy_files_dir(self) -> Path:
-        """Get the deploy_files directory path"""
-        return self.djaploy_dir / "deploy_files"
-    
-    def get_inventory_dir(self) -> Path:
-        """Get the inventory directory path"""
-        return self.djaploy_dir / "inventory"
-    
-    def get_config_file(self) -> Path:
-        """Get the config.py file path"""
-        return self.djaploy_dir / "config.py"
-    
-    def get_module_config(self, module_name: str) -> Dict[str, Any]:
-        """Get configuration for a specific module"""
-        return self.module_configs.get(module_name, {})
-    
-    def validate(self):
-        """Validate the configuration"""
-        errors = []
-        
-        if not self.project_name:
-            errors.append("project_name is required")
-            
-        if not self.app_user:
-            errors.append("app_user is required")
-            
-        if not self.djaploy_dir:
-            errors.append("djaploy_dir is required")
-            
-        if errors:
-            raise ValueError(f"Configuration validation failed: {', '.join(errors)}")
-        
-        return True
 
 
 @dataclass
@@ -258,8 +92,9 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     ssh_key: Optional[str] = None
     _sudo_password: Optional[str] = None
     
-    app_user: Optional[str] = None
+    app_user: str = "app"
     app_hostname: Optional[str] = None
+    app_name: str  # Deployment name on this host (e.g. "myapp", "myapp-staging")
     
     # Services to manage on this host
     services: Optional[List[str]] = None
@@ -278,6 +113,24 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
 
     # Environment identifier (e.g., 'production', 'staging', 'dev')
     env: Optional[str] = None
+
+    # Deployment settings
+    python_version: str = "3.11"
+    python_compile: bool = False  # Compile Python from source
+    deployment_strategy: str = "zero_downtime"  # "in_place" or "zero_downtime"
+    keep_releases: int = 5  # Releases to keep (zero_downtime only)
+    manage_py_path: str = "manage.py"  # Relative path to manage.py in the artifact
+    db_dir: Optional[str] = None  # External database directory template
+    shared_resources: Optional[List[str]] = None  # Paths to symlink from shared/
+
+    # Per-module configuration (merged with defaults)
+    gunicorn_conf: Optional[Dict[str, Any]] = None  # workers, timeout, wsgi_module
+    nginx_conf: Optional[Dict[str, Any]] = None  # server_name, listen, client_max_body_size
+    core_conf: Optional[Dict[str, Any]] = None  # poetry_no_root, exclude_groups, poetry_lock, databases
+    versioning_conf: Optional[Dict[str, Any]] = None  # increment_type, tag_environments, push_tags
+    notifications_conf: Optional[Dict[str, Any]] = None  # webhook_url, display_name, changelog_generator, etc.
+    artifact_conf: Optional[Dict[str, Any]] = None  # extra_files
+    http_hook_conf: Optional[Dict[str, Any]] = None  # webroot_path
 
     def __new__(cls, name: str, **kwargs):
         dict_typing = cls._dict_annotations
