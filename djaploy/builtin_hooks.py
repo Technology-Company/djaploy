@@ -24,24 +24,16 @@ from .hooks import hook
 def _deploy_run_prepare(context):
     """Run the prepare.py script before artifact creation."""
     if context.get("skip_prepare"):
-        print("Skipping prepare script", flush=True)
         return
 
-    from .discovery import find_config
+    from .discovery import get_app_infra_dirs
 
-    config_path = find_config()
-    if not config_path:
-        print("No config found, skipping prepare", flush=True)
-        return
-
-    prepare_script = config_path.parent / "prepare.py"
-    if not prepare_script.exists():
-        return
-
-    from .deploy import _run_prepare
-    print("Running prepare script...", flush=True)
-    _run_prepare(prepare_script)
-    print("Prepare script done", flush=True)
+    for app_label, infra_dir in get_app_infra_dirs():
+        prepare_script = infra_dir / "prepare.py"
+        if prepare_script.exists():
+            from .deploy import _run_prepare
+            print(f"Running prepare script ({app_label})...", flush=True)
+            _run_prepare(prepare_script)
 
 
 @hook("deploy:precommand")
@@ -53,10 +45,8 @@ def _deploy_create_artifact(context):
     mode = context.get("mode", "latest")
     release_tag = context.get("release") if mode == "release" else None
 
-    print("Loading inventory...", flush=True)
     hosts = context.get("_hosts") or _load_inventory_hosts(context["inventory_file"])
     context["_hosts"] = hosts
-    print(f"Inventory loaded ({len(hosts)} host(s))", flush=True)
     artifact_conf = _get_host_conf(hosts, "artifact_conf")
 
     print(f"Creating {mode} artifact...", flush=True)
