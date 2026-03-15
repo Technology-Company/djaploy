@@ -57,10 +57,12 @@ def run_command(context: Dict[str, Any]) -> None:
     command_name = context["command"]
 
     # 1. Precommand hooks
+    print(f"Preparing {command_name}...", flush=True)
     call_hook(f"{command_name}:precommand", context)
     call_hook("precommand", context)
 
     # 2. Run pyinfra
+    print("Starting remote execution...", flush=True)
     processed_inventory = _preprocess_inventory(str(context["inventory_file"]))
 
     try:

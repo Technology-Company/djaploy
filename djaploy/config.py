@@ -90,6 +90,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     ssh_user: str = "deploy"
     ssh_port: Optional[int] = 22
     ssh_key: Optional[str] = None
+    ssh_connect_timeout: int = 10  # SSH connection timeout in seconds
     _sudo_password: Optional[str] = None
     
     app_user: str = "app"
@@ -160,6 +161,13 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
         if config.get("ssh_key"):
             import os
             config["ssh_key"] = os.path.expanduser(config["ssh_key"])
+
+        # Map ssh_connect_timeout into pyinfra's ssh_paramiko_connect_kwargs
+        timeout = config.pop("ssh_connect_timeout", None)
+        if timeout is not None:
+            paramiko_kwargs = config.get("ssh_paramiko_connect_kwargs", {})
+            paramiko_kwargs.setdefault("timeout", timeout)
+            config["ssh_paramiko_connect_kwargs"] = paramiko_kwargs
 
         config["name"] = name
 
