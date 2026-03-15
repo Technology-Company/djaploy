@@ -29,12 +29,10 @@ def _deploy_run_prepare(context):
     from django.conf import settings
     from .discovery import find_config
 
-    # Look for prepare.py next to the discovered config file
     config_path = find_config()
     if config_path:
         prepare_script = config_path.parent / "prepare.py"
     else:
-        # Fallback: check DJAPLOY_CONFIG_DIR
         djaploy_dir = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
         if djaploy_dir:
             prepare_script = Path(djaploy_dir) / "prepare.py"
@@ -43,6 +41,7 @@ def _deploy_run_prepare(context):
 
     if prepare_script.exists():
         from .deploy import _run_prepare
+        print("Running prepare script...", flush=True)
         _run_prepare(prepare_script)
 
 
@@ -59,14 +58,14 @@ def _deploy_create_artifact(context):
     context["_hosts"] = hosts
     artifact_conf = _get_host_conf(hosts, "artifact_conf")
 
-    # Build once with temp name
+    print(f"Creating artifact ({mode})...", flush=True)
     temp_artifact = create_artifact(
         mode=mode,
         release_tag=release_tag,
         artifact_conf=artifact_conf,
     )
 
-    # Copy with first host's app_name for the pyinfra artifact path
+    # Copy with first host's app_name
     if hosts:
         _, data = hosts[0]
         app_name = (data.get("app_name") if isinstance(data, dict)
