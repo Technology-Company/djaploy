@@ -122,7 +122,7 @@ def deploy_config_files(host_data, app_path: str):
     """Render and deploy config file templates (systemd, nginx) to the server."""
     from io import StringIO
     from pyinfra.operations import files
-    from djaploy.apps.core.infra.templates import (
+    from djaploy.infra.templates import (
         SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, NGINX_SITE,
         build_template_context,
     )

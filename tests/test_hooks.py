@@ -254,18 +254,43 @@ class TestBuiltinHooks(unittest.TestCase):
 
 
 class TestDjaployAppDiscovery(unittest.TestCase):
-    """Test that djaploy built-in apps are discovered."""
+    """Test that djaploy built-in apps are discovered via INSTALLED_APPS."""
 
-    def test_load_djaploy_apps_finds_core_nginx_and_systemd(self):
-        from djaploy.hooks import _registry
+    def test_djaploy_apps_discovered_via_installed_apps(self):
+        """Built-in apps are discovered when added to INSTALLED_APPS."""
+        import djaploy.discovery
+        from djaploy.hooks import HookRegistry
+        from pathlib import Path
 
-        # Save and clear remote hooks, then discover apps
-        saved = dict(_registry._remote_hooks)
-        _registry._remote_hooks.clear()
+        registry = HookRegistry()
+
+        # Simulate Django seeing the built-in apps in INSTALLED_APPS
+        djaploy_dir = Path(__file__).resolve().parent.parent / "djaploy"
+        apps_dir = djaploy_dir / "apps"
+        mock_apps = []
+
+        # "djaploy" itself provides core hooks (infra/ lives in djaploy/)
+        mock_djaploy = MagicMock()
+        mock_djaploy.label = "djaploy"
+        mock_djaploy.path = str(djaploy_dir)
+        mock_apps.append(mock_djaploy)
+
+        # nginx and systemd are separate apps under djaploy/apps/
+        for app_name in ("nginx", "systemd"):
+            mock_app = MagicMock()
+            mock_app.label = f"djaploy_{app_name}"
+            mock_app.path = str(apps_dir / app_name)
+            mock_apps.append(mock_app)
+
+        with patch("djaploy.hooks.HookRegistry._load_builtin_hooks"):
+            with patch("djaploy.discovery.apps") as mock_django_apps:
+                mock_django_apps.get_app_configs.return_value = mock_apps
+                registry.discover()
+
+        from djaploy.hooks import _registry as global_registry
+        saved_remote = dict(global_registry._remote_hooks)
         try:
-            _registry._load_djaploy_apps()
-
-            hook_names = _registry.get_hook_names()
+            hook_names = global_registry.get_hook_names()
             self.assertIn("configure", hook_names)
             self.assertIn("deploy:upload", hook_names)
             self.assertIn("deploy:configure", hook_names)
@@ -273,41 +298,59 @@ class TestDjaployAppDiscovery(unittest.TestCase):
             self.assertIn("deploy:start", hook_names)
             self.assertIn("rollback", hook_names)
 
-            # configure — server setup
-            configure_hooks = _registry.get_remote_hooks("configure")
+            # configure — server setup (from core)
+            configure_hooks = global_registry.get_remote_hooks("configure")
             configure_names = [h.function.__name__ for h in configure_hooks]
             self.assertIn("configure_server", configure_names)
 
-            # deploy:upload — upload and extract artifact
-            upload_hooks = _registry.get_remote_hooks("deploy:upload")
+            # deploy:upload — upload and extract artifact (from core)
+            upload_hooks = global_registry.get_remote_hooks("deploy:upload")
             upload_names = [h.function.__name__ for h in upload_hooks]
             self.assertIn("upload_artifact", upload_names)
 
             # deploy:configure — deps, configs, SSL, daemon-reload
-            config_hooks = _registry.get_remote_hooks("deploy:configure")
+            config_hooks = global_registry.get_remote_hooks("deploy:configure")
             config_names = [h.function.__name__ for h in config_hooks]
             self.assertIn("configure_application", config_names)
             self.assertIn("deploy_nginx", config_names)
             self.assertIn("reload_systemd_daemon", config_names)
 
             # deploy:pre — migrations, collectstatic, symlink swap
-            pre_hooks = _registry.get_remote_hooks("deploy:pre")
+            pre_hooks = global_registry.get_remote_hooks("deploy:pre")
             pre_names = [h.function.__name__ for h in pre_hooks]
             self.assertIn("activate_release", pre_names)
 
             # deploy:start — reload/restart services
-            start_hooks = _registry.get_remote_hooks("deploy:start")
+            start_hooks = global_registry.get_remote_hooks("deploy:start")
             start_names = [h.function.__name__ for h in start_hooks]
             self.assertIn("reload_nginx", start_names)
             self.assertIn("start_services", start_names)
 
             # Verify rollback hook
-            rollback_hooks = _registry.get_remote_hooks("rollback")
+            rollback_hooks = global_registry.get_remote_hooks("rollback")
             rollback_names = [h.function.__name__ for h in rollback_hooks]
             self.assertIn("rollback_release", rollback_names)
         finally:
-            _registry._remote_hooks.clear()
-            _registry._remote_hooks.update(saved)
+            global_registry._remote_hooks.clear()
+            global_registry._remote_hooks.update(saved_remote)
+
+    def test_apps_not_discovered_when_not_in_installed_apps(self):
+        """Built-in apps are NOT loaded when absent from INSTALLED_APPS."""
+        from djaploy.hooks import HookRegistry
+
+        registry = HookRegistry()
+
+        with patch("djaploy.hooks.HookRegistry._load_builtin_hooks"):
+            with patch("djaploy.discovery.apps") as mock_django_apps:
+                mock_django_apps.get_app_configs.return_value = []
+                registry.discover()
+
+        from djaploy.hooks import _registry as global_registry
+        # No remote hooks should be registered from djaploy apps
+        configure_hooks = global_registry.get_remote_hooks("configure")
+        djaploy_fns = [h.function.__name__ for h in configure_hooks
+                       if h.function.__name__ == "configure_server"]
+        self.assertEqual(djaploy_fns, [])
 
 
 if __name__ == "__main__":

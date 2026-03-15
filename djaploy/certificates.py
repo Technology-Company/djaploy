@@ -260,24 +260,37 @@ class DnsCertificate:
 
 class BunnyDnsCertificate(DnsCertificate):
     """Certificate using Bunny DNS for validation"""
-    
-    def issue_cert(
-        self, 
-        email: str, 
-        is_staging: bool = True, 
+
+    def __init__(
+        self,
+        *domains: str,
+        op_crt: str,
+        op_key: str,
+        bunny_api_key_secret: str,
+        skip_validity_check: bool = False,
         dns_propagate_wait_seconds: int = 10,
-        bunny_api_key_secret: str = None,
+        **kwargs,
+    ):
+        super().__init__(
+            *domains,
+            op_crt=op_crt,
+            op_key=op_key,
+            skip_validity_check=skip_validity_check,
+            **kwargs,
+        )
+        self.bunny_api_key_secret = bunny_api_key_secret
+        self.dns_propagate_wait_seconds = dns_propagate_wait_seconds
+
+    def issue_cert(
+        self,
+        email: str,
+        is_staging: bool = True,
         git_dir: str = None,
+        **kwargs,
     ):
         """Issue certificate using Bunny DNS"""
         if git_dir is None:
             git_dir = os.getcwd()
-        
-        # Get bunny API key
-        if bunny_api_key_secret is None:
-            raise ValueError(
-                "bunny api_key is required. Pass it as a parameter."
-            )
             
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
@@ -286,7 +299,7 @@ class BunnyDnsCertificate(DnsCertificate):
         # Create Bunny credentials file
         bunny_creds_file = os.path.join(certbot_dir, "bunny.ini")
         with open(bunny_creds_file, "w") as file:
-            secret_data = f'dns_bunny_api_key = {OpSecret(bunny_api_key_secret)}'
+            secret_data = f'dns_bunny_api_key = {OpSecret(self.bunny_api_key_secret)}'
             file.write(secret_data)
 
         # Set correct permissions (read-only for owner)
@@ -309,7 +322,7 @@ class BunnyDnsCertificate(DnsCertificate):
             "--dns-bunny-credentials",
             bunny_creds_file,
             "--dns-bunny-propagation-seconds",
-            str(dns_propagate_wait_seconds),
+            str(self.dns_propagate_wait_seconds),
             "--email",
             email,
         ]
@@ -469,56 +482,71 @@ class SshHttpHook:
         if domain in self._host_cache:
             return self._host_cache[domain]
 
-        # Determine inventory directory
-        inventory_dir = None
+        # Determine inventory directories to scan
+        inventory_dirs = []
         if self.djaploy_dir:
-            inventory_dir = self.djaploy_dir / 'inventory'
+            candidate = self.djaploy_dir / 'inventory'
+            if candidate.exists():
+                inventory_dirs.append(candidate)
 
-        if not inventory_dir or not inventory_dir.exists():
+        # Fall back to INSTALLED_APPS discovery
+        if not inventory_dirs:
+            try:
+                from .discovery import get_app_infra_dirs
+                for _label, infra_dir in get_app_infra_dirs():
+                    inv_dir = infra_dir / 'inventory'
+                    if inv_dir.is_dir():
+                        inventory_dirs.append(inv_dir)
+            except (ImportError, ModuleNotFoundError):
+                pass
+
+        if not inventory_dirs:
             raise ValueError(
-                f"Cannot find inventory directory. Provide djaploy_dir."
+                "Cannot find inventory directory. Add an app with "
+                "infra/inventory/ to INSTALLED_APPS, or provide djaploy_dir."
             )
 
-        # Scan all inventory files
-        for inv_file in inventory_dir.glob('*.py'):
-            if inv_file.name.startswith('_'):
-                continue
+        # Scan all inventory files across all discovered directories
+        for inventory_dir in inventory_dirs:
+            for inv_file in inventory_dir.glob('*.py'):
+                if inv_file.name.startswith('_'):
+                    continue
 
-            env_name = inv_file.stem
+                env_name = inv_file.stem
 
-            try:
-                hosts = self._load_inventory(inv_file)
-            except Exception:
-                # Silently skip inventories that fail to load
-                # (they may reference certificates not relevant to this domain)
-                continue
+                try:
+                    hosts = self._load_inventory(inv_file)
+                except Exception:
+                    # Silently skip inventories that fail to load
+                    # (they may reference certificates not relevant to this domain)
+                    continue
 
-            for host_name, host_data in hosts:
-                # Check domains in host_data
-                host_domains = host_data.get('domains', [])
+                for host_name, host_data in hosts:
+                    # Check domains in host_data
+                    host_domains = host_data.get('domains', [])
 
-                for domain_cert in host_domains:
-                    # Handle both certificate objects and dicts
-                    cert_domains = []
-                    if hasattr(domain_cert, 'domains'):
-                        cert_domains = domain_cert.domains
-                    elif hasattr(domain_cert, 'identifier'):
-                        cert_domains = [domain_cert.identifier]
-                    elif isinstance(domain_cert, dict):
-                        cert_domains = domain_cert.get('domains', [])
-                        if not cert_domains and domain_cert.get('identifier'):
-                            cert_domains = [domain_cert['identifier']]
+                    for domain_cert in host_domains:
+                        # Handle both certificate objects and dicts
+                        cert_domains = []
+                        if hasattr(domain_cert, 'domains'):
+                            cert_domains = domain_cert.domains
+                        elif hasattr(domain_cert, 'identifier'):
+                            cert_domains = [domain_cert.identifier]
+                        elif isinstance(domain_cert, dict):
+                            cert_domains = domain_cert.get('domains', [])
+                            if not cert_domains and domain_cert.get('identifier'):
+                                cert_domains = [domain_cert['identifier']]
 
-                    if domain in cert_domains:
+                        if domain in cert_domains:
+                            result = (host_name, host_data, env_name)
+                            self._host_cache[domain] = result
+                            return result
+
+                    # Also check app_hostname
+                    if host_data.get('app_hostname') == domain:
                         result = (host_name, host_data, env_name)
                         self._host_cache[domain] = result
                         return result
-
-                # Also check app_hostname
-                if host_data.get('app_hostname') == domain:
-                    result = (host_name, host_data, env_name)
-                    self._host_cache[domain] = result
-                    return result
 
         raise ValueError(f"No host found for domain: {domain}")
 

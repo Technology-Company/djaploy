@@ -12,7 +12,7 @@ from djaploy.hooks import deploy_hook
 def configure_server(host_data):
     """Configure basic server requirements: user, Python, Poetry, directories."""
     from pyinfra.operations import apt, server, pip, files
-    from djaploy.apps.core.infra.utils import (
+    from djaploy.infra.utils import (
         is_zero_downtime, get_app_path, install_python,
         configure_http_challenge_sudo,
     )
@@ -141,7 +141,7 @@ def upload_artifact(host_data, artifact_path):
     """Upload artifact, extract, and symlink shared resources."""
     from pyinfra import host
     from pyinfra.operations import server, files
-    from djaploy.apps.core.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, get_app_path
     from pathlib import Path
     from datetime import datetime
 
@@ -273,7 +273,7 @@ def upload_artifact(host_data, artifact_path):
 @deploy_hook("deploy:configure")
 def configure_application(host_data, artifact_path):
     """Deploy config files, SSL certs, and install dependencies."""
-    from djaploy.apps.core.infra.utils import (
+    from djaploy.infra.utils import (
         is_zero_downtime, get_app_path, deploy_config_files,
         generate_ssl_certificates, install_dependencies,
     )
@@ -298,7 +298,7 @@ def configure_application(host_data, artifact_path):
 def inject_local_settings(host_data, artifact_path):
     """Append hook-contributed local_settings to local.py."""
     from pyinfra.operations import server
-    from djaploy.apps.core.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, get_app_path
 
     local_settings_b64 = getattr(host_data, "local_settings_b64", None)
     if not local_settings_b64:
@@ -329,7 +329,7 @@ def activate_release(host_data, artifact_path):
     """Run migrations, collectstatic, and swap symlink (zero-downtime)."""
     from pyinfra import host
     from pyinfra.operations import server
-    from djaploy.apps.core.infra.utils import (
+    from djaploy.infra.utils import (
         is_zero_downtime, get_app_path, run_migrations, collect_static,
     )
 
@@ -366,7 +366,7 @@ def rollback_release(host_data, release=None):
     """Roll back to a previous release by swapping the current symlink."""
     import re
     from pyinfra.operations import server
-    from djaploy.apps.core.infra.utils import get_app_path
+    from djaploy.infra.utils import get_app_path
 
     app_user = getattr(host_data, 'app_user', 'app')
     app_path = get_app_path(host_data)

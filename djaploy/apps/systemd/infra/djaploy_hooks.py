@@ -23,7 +23,7 @@ def start_services(host_data, artifact_path):
     """Start or restart application services after deploy."""
     from pyinfra.operations import systemd
 
-    from djaploy.apps.core.infra.utils import is_zero_downtime
+    from djaploy.infra.utils import is_zero_downtime
     zero_downtime = is_zero_downtime(host_data)
 
     for service in getattr(host_data, "services", []):
@@ -65,7 +65,7 @@ def start_services(host_data, artifact_path):
 def reload_services_on_rollback(host_data, release):
     """Reload or restart services after a rollback."""
     from pyinfra.operations import systemd
-    from djaploy.apps.core.infra.utils import is_zero_downtime
+    from djaploy.infra.utils import is_zero_downtime
 
     zero_downtime = is_zero_downtime(host_data)
 

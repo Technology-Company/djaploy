@@ -15,7 +15,7 @@ Two decorators are provided:
 Ordering is controlled by assigning hooks to the correct phase.  Each
 command file calls phases in a fixed sequence (e.g. ``deploy:pre`` →
 ``deploy`` → ``deploy:post``).  Within a single phase hooks run in
-registration order (built-in apps first, then INSTALLED_APPS order).
+registration order (built-in hooks first, then INSTALLED_APPS order).
 """
 
 import importlib.util
@@ -91,17 +91,13 @@ class HookRegistry:
 
         Idempotent — calling multiple times is safe.  Order:
         1. Built-in hooks (notifications, tagging)
-        2. djaploy apps (``djaploy/apps/*/infra/djaploy_hooks.py``)
-        3. Django app hooks (``INSTALLED_APPS`` order)
+        2. Django app hooks (``INSTALLED_APPS`` order, including djaploy apps)
         """
         if self._discovered:
             return
 
         # Load built-in hooks (notifications, tagging) before app hooks
         self._load_builtin_hooks()
-
-        # Load hooks from djaploy's built-in apps (nginx, systemd, etc.)
-        self._load_djaploy_apps()
 
         try:
             from .discovery import get_app_infra_dirs
@@ -122,18 +118,6 @@ class HookRegistry:
             import djaploy.builtin_hooks  # noqa: F401
         except (ImportError, ModuleNotFoundError):
             pass
-
-    def _load_djaploy_apps(self) -> None:
-        """Load hooks from djaploy/apps/*/infra/djaploy_hooks.py."""
-        apps_dir = Path(__file__).parent / "apps"
-        if not apps_dir.is_dir():
-            return
-        for app_dir in sorted(apps_dir.iterdir()):
-            if not app_dir.is_dir() or app_dir.name.startswith("_"):
-                continue
-            hooks_file = app_dir / "infra" / "djaploy_hooks.py"
-            if hooks_file.is_file():
-                self._load_hooks_file(hooks_file, f"djaploy_{app_dir.name}")
 
     def _load_hooks_file(self, path: Path, app_label: str) -> None:
         module_name = f"djaploy_hooks_{app_label}"

@@ -112,7 +112,7 @@ server {
 
 def build_template_context(host_data):
     """Build the full Jinja2 context dict from host_data."""
-    from djaploy.apps.core.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, get_app_path
 
     app_user = getattr(host_data, 'app_user', 'app')
     app_name = getattr(host_data, 'app_name', None)
