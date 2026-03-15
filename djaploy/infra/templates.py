@@ -24,7 +24,7 @@ ExecStart=/usr/local/bin/gunicornherder \\
     --pidfile /run/{{ project_name }}/gunicorn.pid \\
     --app-dir {{ app_path }}/current{% if manage_subdir %}/{{ manage_subdir }}{% endif %} \\
     -- \\
-    {{ app_path }}/current/.venv/bin/gunicorn \\
+    {{ app_path }}/current/.venv/bin/python -m gunicorn \\
         --workers {{ workers }} \\
         --bind unix:/run/{{ project_name }}/{{ project_name }}.sock \\
         --umask {{ umask }} \\
