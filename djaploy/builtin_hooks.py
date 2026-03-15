@@ -53,6 +53,7 @@ def _deploy_create_artifact(context):
     print("Loading inventory...", flush=True)
     hosts = context.get("_hosts") or _load_inventory_hosts(context["inventory_file"])
     context["_hosts"] = hosts
+    print(f"Inventory loaded ({len(hosts)} host(s))", flush=True)
     artifact_conf = _get_host_conf(hosts, "artifact_conf")
 
     print(f"Creating {mode} artifact...", flush=True)
