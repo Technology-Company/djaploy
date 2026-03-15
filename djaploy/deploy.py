@@ -208,6 +208,9 @@ def _load_inventory_hosts(inventory_file: str) -> list:
 
     Returns a list of (hostname, data_dict) tuples.  Used by local hooks
     that need to read HostConfig fields before pyinfra connects.
+
+    If OpSecret objects are used, resolves all secrets in a single
+    1Password call before returning.
     """
     import importlib.util
 
@@ -216,9 +219,18 @@ def _load_inventory_hosts(inventory_file: str) -> list:
     try:
         sys.modules["_inv_loader"] = module
         spec.loader.exec_module(module)
-        return list(getattr(module, "hosts", []))
+        hosts = list(getattr(module, "hosts", []))
     finally:
         sys.modules.pop("_inv_loader", None)
+
+    # Batch-resolve all OpSecret values in one op inject call
+    try:
+        from .certificates import OpSecret
+        OpSecret.resolve_all()
+    except ImportError:
+        pass
+
+    return hosts
 
 
 def _get_host_conf(hosts: list, key: str) -> Dict[str, Any]:
@@ -454,6 +466,13 @@ def _preprocess_inventory(inventory_file: str) -> str:
 
         hosts = getattr(inventory_module, 'hosts', [])
 
+        # Batch-resolve any OpSecret values before serialization
+        try:
+            from .certificates import OpSecret
+            OpSecret.resolve_all()
+        except ImportError:
+            pass
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
             f.write("# Auto-processed inventory file\n\n")
             f.write("hosts = [\n")
@@ -478,8 +497,11 @@ def _preprocess_inventory(inventory_file: str) -> str:
 def _make_value_serializable(value):
     """Convert a value to a serializable form for inventory processing."""
     from dataclasses import is_dataclass, asdict
+    from .utils import StringLike
 
-    if is_dataclass(value) and not isinstance(value, type):
+    if isinstance(value, StringLike):
+        return str(value)
+    elif is_dataclass(value) and not isinstance(value, type):
         result = {k: _make_value_serializable(v) for k, v in asdict(value).items()}
         result['__class__'] = value.__class__.__name__
         return result

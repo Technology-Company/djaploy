@@ -34,24 +34,26 @@ class OpSecret(StringLike):
 
     @staticmethod
     def _map_secrets():
-        """Fetch all secrets from 1Password"""
+        """Fetch all registered secrets from 1Password in one call."""
         import shutil
-        
+
+        # Only fetch secrets we haven't resolved yet
+        unresolved = [k for k in OpSecret._secret_mapping if k not in OpSecret._secret_values]
+        if not unresolved:
+            return
+
         if not shutil.which("op"):
             import warnings
             warnings.warn(
                 "1Password CLI (op) is not installed. Using empty values for secrets.",
                 UserWarning
             )
-            OpSecret._secret_values = {k: "" for k in OpSecret._secret_mapping.keys()}
+            for k in unresolved:
+                OpSecret._secret_values[k] = ""
             return
-            
-        # Use a delimiter-based template instead of JSON to avoid issues
-        # with special characters (like ") in secret values breaking JSON parsing.
-        # The UUID ensures the delimiter is unique per run.
+
         delimiter = f"djaploy-delimit-{uuid.uuid4()}"
-        keys = list(OpSecret._secret_mapping.keys())
-        references = [OpSecret._secret_mapping[k] for k in keys]
+        references = [OpSecret._secret_mapping[k] for k in unresolved]
         template = delimiter.join(references)
 
         output = subprocess.run(
@@ -62,20 +64,32 @@ class OpSecret(StringLike):
                 f"{output.stderr}\nFailed to fetch secrets from 1Password"
             )
 
-        # Strip trailing newline added by op inject CLI before splitting
         values = output.stdout.rstrip("\n").split(delimiter)
-        if len(values) != len(keys):
+        if len(values) != len(unresolved):
             raise ValueError(
-                f"Expected {len(keys)} secrets but got {len(values)} values from 1Password"
+                f"Expected {len(unresolved)} secrets but got {len(values)} values from 1Password"
             )
 
-        for key, value in zip(keys, values):
-            # Replicate json.loads() behavior: convert literal \n to real newlines
+        for key, value in zip(unresolved, values):
             OpSecret._secret_values[key] = value.replace(r'\n', '\n')
 
     @staticmethod
     def _create_secret_reference(value):
         return "{{ " + "op:/" + value + " }}"
+
+    @staticmethod
+    def resolve_all():
+        """Resolve all registered secrets in a single 1Password call.
+
+        Call this after all OpSecret instances are created but before
+        any values are read.  Avoids repeated ``op inject`` calls.
+        """
+        if not OpSecret._secret_mapping:
+            return
+        # Only fetch if there are unresolved secrets
+        unresolved = set(OpSecret._secret_mapping) - set(OpSecret._secret_values)
+        if unresolved:
+            OpSecret._map_secrets()
 
     @property
     def data(self):
