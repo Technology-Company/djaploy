@@ -27,6 +27,8 @@ RUN apt-get install -y \
     wget \
     git \
     build-essential \
+    borgbackup \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create the deploy user (used by djaploy for SSH)

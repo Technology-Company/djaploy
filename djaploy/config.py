@@ -228,6 +228,48 @@ class BackupConfig:
         return True
 
 
+@dataclass
+class BorgBackupConfig:
+    """Borg backup configuration for a host"""
+
+    enabled: bool = True
+
+    # Remote repository settings (ssh-based)
+    repo_host: Optional[str] = None        # SSH hostname of backup server
+    repo_user: Optional[str] = None        # SSH user on backup server
+    repo_port: int = 22                    # SSH port
+    repo_path: Optional[str] = None        # Path on remote server; defaults to ./backups
+    ssh_key: Optional[str] = None          # Path to SSH key on target host (if not default)
+    deploy_key: Optional[str] = None        # Local path to private key to deploy to target (e.g. OpFilePath)
+
+    # Encryption
+    passphrase: Optional[str] = None       # Borg repo passphrase (BORG_PASSPHRASE)
+
+    # Compression
+    compression: str = "zstd,3"            # Borg compression algorithm (lz4, zstd, zlib, etc.)
+
+    # Backup settings
+    databases: List[str] = field(default_factory=lambda: ["default.db"])
+    backup_media: bool = True
+
+    # Local paths (defaults computed from app_user if not set)
+    db_path: Optional[str] = None
+    media_path: Optional[str] = None
+
+    # Retention policy (borg prune)
+    keep_daily: int = 7
+    keep_weekly: int = 4
+    keep_monthly: int = 6
+
+    # Schedule (cron format)
+    schedule: str = "0 2 * * *"
+
+    def validate(self):
+        if not self.passphrase:
+            raise ValueError("Borg backup requires a passphrase")
+        return True
+
+
 class HostConfig(tuple, metaclass=HostConfigMetaclass):
     """
     Configuration for a deployment host.
@@ -255,6 +297,9 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     
     # Backup configuration for this host
     backup: Optional[BackupConfig] = None
+
+    # Borg backup configuration for this host
+    borg_backup: Optional[BorgBackupConfig] = None
     
     # Additional host-specific data
     data: Optional[Dict[str, Any]] = None

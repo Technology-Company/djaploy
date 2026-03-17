@@ -12,9 +12,9 @@ config = DjaployConfig(
     project_name="helloworld",
     djaploy_dir=Path(__file__).parent,
     manage_py_path=Path("manage.py"),
-    python_version="3.13",
+    python_version="3.10",
     app_user="app",
-    ssh_user="root",
+    ssh_user="deploy",
     deployment_strategy="zero_downtime",
     keep_releases=3,
 )
