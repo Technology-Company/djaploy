@@ -34,17 +34,24 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 log = logging.getLogger("gunicornherder")
 
 
 class GunicornHerder:
-    def __init__(self, pidfile, cmd, app_dir=None, overlap=5, timeout=30):
+    def __init__(self, pidfile, cmd, app_dir=None, overlap=5, timeout=30,
+                 health_check_url=None, health_check_timeout=10,
+                 health_check_retries=3, health_check_interval=2):
         self.pidfile = pidfile
         self.cmd = cmd
         self.app_dir = app_dir
         self.overlap = overlap
         self.timeout = timeout
+        self.health_check_url = health_check_url
+        self.health_check_timeout = health_check_timeout
+        self.health_check_retries = health_check_retries
+        self.health_check_interval = health_check_interval
         self.running = True
         self._reloading = False
         self._config_file = None
@@ -140,6 +147,18 @@ class GunicornHerder:
 
         log.info("New master ready (PID %d)", new_pid)
 
+        # Step 2b: Health check — verify new master is actually serving
+        if self.health_check_url:
+            if not self._health_check(new_pid):
+                log.error(
+                    "Health check failed for new master (PID %d), rolling back",
+                    new_pid,
+                )
+                self._signal(new_pid, signal.SIGTERM)
+                log.info("Sent TERM to new master (PID %d), keeping old master (PID %d)",
+                         new_pid, old_pid)
+                return
+
         # Step 3: WINCH — old master stops accepting, workers drain
         self._signal(old_pid, signal.SIGWINCH)
         log.info(
@@ -163,6 +182,37 @@ class GunicornHerder:
         else:
             log.warning("Old master (PID %d) did not exit within %ds",
                         old_pid, self.timeout)
+
+    def _health_check(self, new_pid):
+        """Hit health_check_url to verify the new master is serving.
+
+        Retries up to health_check_retries times with health_check_interval
+        seconds between attempts. Returns True if a 2xx response is received.
+        """
+        for attempt in range(1, self.health_check_retries + 1):
+            # If the new master died, no point retrying
+            if not self._pid_alive(new_pid):
+                log.error("New master (PID %d) died during health check", new_pid)
+                return False
+
+            try:
+                req = urllib.request.Request(self.health_check_url, method="GET")
+                resp = urllib.request.urlopen(req, timeout=self.health_check_timeout)
+                code = resp.getcode()
+                if 200 <= code < 300:
+                    log.info("Health check passed (HTTP %d) on attempt %d",
+                             code, attempt)
+                    return True
+                log.warning("Health check returned HTTP %d on attempt %d/%d",
+                            code, attempt, self.health_check_retries)
+            except Exception as exc:
+                log.warning("Health check failed on attempt %d/%d: %s",
+                            attempt, self.health_check_retries, exc)
+
+            if attempt < self.health_check_retries:
+                time.sleep(self.health_check_interval)
+
+        return False
 
     # -- helpers --
 
@@ -305,6 +355,28 @@ def main():
         default=30,
         help="Seconds to wait for new master to start (default: 30)",
     )
+    parser.add_argument(
+        "--health-check-url",
+        help="URL to GET after new master starts; rollback on failure",
+    )
+    parser.add_argument(
+        "--health-check-timeout",
+        type=int,
+        default=10,
+        help="Seconds to wait for each health check request (default: 10)",
+    )
+    parser.add_argument(
+        "--health-check-retries",
+        type=int,
+        default=3,
+        help="Number of health check attempts before rollback (default: 3)",
+    )
+    parser.add_argument(
+        "--health-check-interval",
+        type=int,
+        default=2,
+        help="Seconds between health check retries (default: 2)",
+    )
 
     # Split on '--'
     try:
@@ -332,6 +404,10 @@ def main():
         app_dir=args.app_dir,
         overlap=args.overlap,
         timeout=args.timeout,
+        health_check_url=args.health_check_url,
+        health_check_timeout=args.health_check_timeout,
+        health_check_retries=args.health_check_retries,
+        health_check_interval=args.health_check_interval,
     )
     herder.run()
 
