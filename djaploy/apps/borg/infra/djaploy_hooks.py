@@ -377,7 +377,13 @@ def restore_borg(host_data, project_config, restore_opts):
     restore_opts:
         archive: specific archive name (default: "latest")
         db_only: if True, skip media restore
+        backend: if set, only run when "borg"
     """
+    # Skip if a different backend was explicitly requested
+    backend = restore_opts.get("backend", "")
+    if backend and backend != "borg":
+        return
+
     from pyinfra.operations import server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"
@@ -479,12 +485,45 @@ fi
 log_message "Borg restore complete"
 '''
 
+    # Deploy restore script as temp file and execute it (bash required for functions)
+    restore_script_path = f"/home/{app_user}/tmp/borg_restore.sh"
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(f"#!/bin/bash\n{restore_script}")
+        temp_path = f.name
+
+    from pyinfra.operations import files
+    files.directory(
+        name="Ensure tmp directory for borg restore",
+        path=f"/home/{app_user}/tmp",
+        user=app_user,
+        group=app_user,
+        _sudo=True,
+    )
+
+    files.put(
+        name="Upload borg restore script",
+        src=temp_path,
+        dest=restore_script_path,
+        user=app_user,
+        group=app_user,
+        mode="755",
+        _sudo=True,
+    )
+
     server.shell(
         name="Restore from borg backup",
-        commands=[restore_script],
+        commands=[restore_script_path],
         _sudo=True,
         _sudo_user=app_user,
         _use_sudo_login=True,
+    )
+
+    server.shell(
+        name="Clean up borg restore script",
+        commands=[f"rm -f {restore_script_path}"],
+        _sudo=True,
+        _sudo_user=app_user,
     )
 
     # Restart application services

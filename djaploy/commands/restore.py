@@ -24,6 +24,8 @@ restore_opts = {
     "db_only": getattr(host.data, "db_only", "false").lower() == "true"
     if isinstance(getattr(host.data, "db_only", False), str)
     else bool(getattr(host.data, "db_only", False)),
+    "archive": getattr(host.data, "archive", "latest"),
+    "backend": getattr(host.data, "backend", ""),
 }
 
 for phase in ("restore:pre", "restore", "restore:post"):
