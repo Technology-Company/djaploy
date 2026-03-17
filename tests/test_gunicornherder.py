@@ -16,18 +16,24 @@ class TestCreateConfig(unittest.TestCase):
     """Test that _create_config generates a correct gunicorn pre_exec hook."""
 
     def _make_venv_tree(self, base, python_name="python"):
-        """Create a minimal venv bin/ directory with a gunicorn and python script."""
+        """Create a minimal venv bin/ directory with a gunicorn and python script.
+
+        The gunicorn stub's shebang points to the python binary in the same
+        bin/ dir — matching what the deploy step writes with sed -i.
+        """
         bin_dir = base / "bin"
         bin_dir.mkdir(parents=True)
-        gunicorn = bin_dir / "gunicorn"
-        gunicorn.write_text("#!/usr/bin/env python\n# gunicorn stub")
-        gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
         python = bin_dir / python_name
         python.write_text("#!/bin/sh\n# python stub")
         python.chmod(python.stat().st_mode | stat.S_IEXEC)
-        # Also create a 'python' symlink if python_name is versioned
         if python_name != "python":
             (bin_dir / "python").symlink_to(python)
+        # Shebang uses the resolved bin/ dir (handles macOS /var → /private/var)
+        # but does NOT follow the python_name symlink, mirroring the deploy sed rewrite.
+        shebang_python = str(bin_dir.resolve() / python_name)
+        gunicorn = bin_dir / "gunicorn"
+        gunicorn.write_text(f"#!{shebang_python}\n# gunicorn stub")
+        gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
         return gunicorn, python
 
     def _load_pre_exec(self, config_path):
@@ -152,13 +158,17 @@ class TestCreateConfig(unittest.TestCase):
             new_venv = tmpdir / "shared" / "venv-newhash"
             bin_dir = new_venv / "bin"
             bin_dir.mkdir(parents=True)
-            gunicorn = bin_dir / "gunicorn"
-            gunicorn.write_text("#!/usr/bin/env python\n# gunicorn stub")
-            gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
             # python3.11 → system python (symlink, as in a real venv)
             (bin_dir / "python3.11").symlink_to(system_python)
             (bin_dir / "python3").symlink_to(bin_dir / "python3.11")
             (bin_dir / "python").symlink_to(bin_dir / "python3")
+            # Gunicorn shebang: deploy step writes the versioned python path
+            # (bin_dir resolved to handle macOS /var→/private/var, but NOT
+            # following python3.11 → system python)
+            shebang_python = str(bin_dir.resolve() / "python3.11")
+            gunicorn = bin_dir / "gunicorn"
+            gunicorn.write_text(f"#!{shebang_python}\n# gunicorn stub")
+            gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
 
             (new_release / ".venv").symlink_to(new_venv)
             current = tmpdir / "current"
@@ -179,11 +189,9 @@ class TestCreateConfig(unittest.TestCase):
                 )
                 pre_exec(server)
 
-                # Must be the venv's bin/python — NOT the system python
-                self.assertEqual(
-                    server.START_CTX[0],
-                    str((new_venv / "bin").resolve() / "python"),
-                )
+                # Must be the shebang python (python3.11 inside the venv dir),
+                # NOT the system python that python3.11 symlinks to.
+                self.assertEqual(server.START_CTX[0], shebang_python)
                 self.assertNotEqual(server.START_CTX[0], str(system_python.resolve()))
             finally:
                 os.unlink(config_path)
@@ -200,7 +208,9 @@ class TestCreateConfig(unittest.TestCase):
             bin_dir = venv / "bin"
             bin_dir.mkdir(parents=True)
             gunicorn = bin_dir / "gunicorn"
-            gunicorn.write_text("#!/usr/bin/env python\n# stub")
+            # Shebang points to a python that doesn't exist (no python in this venv).
+            # Both the shebang path and the fallback 'python' lookup should fail.
+            gunicorn.write_text(f"#!{bin_dir}/python\n# stub")
             gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
 
             (release / ".venv").symlink_to(venv)
