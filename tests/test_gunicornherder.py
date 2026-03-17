@@ -1,8 +1,11 @@
 """Tests for the gunicornherder zero-downtime gunicorn manager."""
 
+import glob
 import os
 import signal
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -436,6 +439,129 @@ class TestHealthCheck(unittest.TestCase):
         signals_to_old = [sig for pid, sig in calls if pid == old_pid]
         self.assertNotIn(signal.SIGWINCH, signals_to_old)
         self.assertNotIn(signal.SIGQUIT, signals_to_old)
+
+
+class TestVenvActivationOnReexec(unittest.TestCase):
+    """Subprocess integration tests: does the correct venv actually activate?
+
+    Unit tests with mock objects cannot catch whether the Python executable
+    we write into START_CTX[0] actually activates the venv when exec'd.
+    These tests use subprocess to verify end-to-end.
+
+    The core question: when gunicorn does
+        os.execvpe(START_CTX[0], START_CTX['args'], env)
+    does the new Python process have the new venv's site-packages on sys.path?
+
+    To isolate *executable-based* venv activation (the mechanism we control via
+    START_CTX[0]), each test uses a wrapper that calls:
+        os.execve(executable, [executable, probe], env)
+    This sets argv[0] = executable, so pyvenv.cfg detection runs against the
+    executable path itself — not against argv[0] = a gunicorn script in venv
+    bin (which would give a false pass regardless of the executable).
+    """
+
+    # Stripped environment: no inherited venv that could mask a bug.
+    _CLEAN_ENV = {
+        k: v for k, v in os.environ.items()
+        if k not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME")
+    }
+
+    def _create_venv(self, venv_dir):
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self.skipTest(f"venv creation failed: {result.stderr}")
+        matches = glob.glob(str(venv_dir / "lib" / "python*" / "site-packages"))
+        if not matches:
+            self.skipTest("could not find site-packages in venv")
+        return Path(matches[0])
+
+    def _run_via_execve(self, tmpdir, executable, probe):
+        """Run probe via a wrapper that calls os.execve(executable, [executable, probe]).
+
+        This sets C-level argv[0] = executable, so Python's pyvenv.cfg
+        detection uses the executable path — identical to the shebang mechanism
+        used on initial gunicorn startup, and what we need to verify for USR2.
+        """
+        wrapper = tmpdir / "_execve_wrapper.py"
+        wrapper.write_text(
+            "import os\n"
+            f"os.execve({str(executable)!r}, [{str(executable)!r}, {str(probe)!r}], os.environ)\n"
+        )
+        return subprocess.run(
+            [sys.executable, str(wrapper)],
+            capture_output=True, text=True,
+            env=self._CLEAN_ENV,
+        )
+
+    def test_shebang_python_activates_venv(self):
+        """Shebang python (a path inside the venv dir) activates the venv.
+
+        Uses the same argv[0]=executable pattern as the kernel shebang
+        mechanism, so pyvenv.cfg is found one level above the venv's bin/.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            venv_dir = tmpdir / "venv"
+            site_packages = self._create_venv(venv_dir)
+
+            marker = site_packages / "_djaploy_venv_marker.py"
+            marker.write_text("VALUE = 'correct_venv'\n")
+
+            # shebang_python: a path inside the venv (what the deploy step writes)
+            shebang_python = str(venv_dir / "bin" / "python")
+            probe = tmpdir / "probe.py"
+            probe.write_text(
+                "import _djaploy_venv_marker\n"
+                "print(_djaploy_venv_marker.VALUE)\n"
+            )
+
+            result = self._run_via_execve(tmpdir, shebang_python, probe)
+            self.assertEqual(result.returncode, 0,
+                             f"venv package not importable: {result.stderr}")
+            self.assertEqual(result.stdout.strip(), "correct_venv")
+
+    def test_resolved_system_python_does_not_activate_venv(self):
+        """Regression: os.path.realpath() on venv python broke venv activation.
+
+        The old pre_exec called os.path.realpath(new_python), resolving the
+        venv's python symlink all the way to the system python (e.g.
+        /usr/bin/python3.11).  When gunicorn re-exec'd with that path as
+        START_CTX[0] (= C-level argv[0]), Python searched for pyvenv.cfg
+        relative to /usr/bin/ — never found it — and the new venv's
+        site-packages were never added to sys.path.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            venv_dir = tmpdir / "venv"
+            site_packages = self._create_venv(venv_dir)
+
+            # Old broken code: resolve venv python to the system python.
+            system_python = os.path.realpath(str(venv_dir / "bin" / "python"))
+            if system_python.startswith(str(venv_dir.resolve())):
+                self.skipTest(
+                    "venv python realpath stays inside venv (real copy, not "
+                    "symlink) — old bug would not have manifested on this system"
+                )
+
+            marker = site_packages / "_djaploy_venv_marker.py"
+            marker.write_text("VALUE = 'correct_venv'\n")
+
+            probe = tmpdir / "probe.py"
+            probe.write_text(
+                "import _djaploy_venv_marker\n"
+                "print(_djaploy_venv_marker.VALUE)\n"
+            )
+
+            result = self._run_via_execve(tmpdir, system_python, probe)
+            # System python cannot find pyvenv.cfg → venv not activated → import fails
+            self.assertNotEqual(
+                result.returncode, 0,
+                "System python activated the venv unexpectedly — pyvenv.cfg was "
+                "found via some other mechanism on this system.",
+            )
 
 
 if __name__ == "__main__":
