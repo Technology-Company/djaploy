@@ -240,6 +240,7 @@ class GunicornHerder:
         safe_path = self.app_dir.replace("\\", "\\\\").replace("'", "\\'")
         content = (
             "import os\n"
+            "import sys\n"
             "\n"
             "def pre_exec(server):\n"
             f"    os.chdir('{safe_path}')\n"
@@ -248,6 +249,20 @@ class GunicornHerder:
             "    # after pre_exec uses the new path, not the old release\n"
             "    server.START_CTX['cwd'] = resolved\n"
             f"    server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)\n"
+            "    # Update the Python executable so the new master uses the\n"
+            "    # new release's venv rather than the old one.  sys.argv[0]\n"
+            "    # (the gunicorn script) goes through the 'current' symlink\n"
+            "    # which now points at the new release, so resolving it gives\n"
+            "    # us the new venv's bin/ directory.\n"
+            "    gunicorn_bin = os.path.realpath(sys.argv[0])\n"
+            "    bin_dir = os.path.dirname(gunicorn_bin)\n"
+            "    for py_name in ('python3', 'python'):\n"
+            "        candidate = os.path.join(bin_dir, py_name)\n"
+            "        if os.path.isfile(candidate):\n"
+            "            server.START_CTX['__executable__'] = candidate\n"
+            "            server.log.info(\n"
+            "                'pre_exec: updated executable to %s', candidate)\n"
+            "            break\n"
         )
         fd, path = tempfile.mkstemp(suffix=".py", prefix="gunicornherder_")
         with os.fdopen(fd, "w") as f:
