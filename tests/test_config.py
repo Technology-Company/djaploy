@@ -137,5 +137,84 @@ class TestSystemdTemplate(unittest.TestCase):
         self.assertLess(hc_pos, sep_pos)
 
 
+try:
+    import jinja2 as _jinja2
+    _JINJA2_AVAILABLE = True
+except ImportError:
+    _JINJA2_AVAILABLE = False
+
+
+@unittest.skipUnless(_JINJA2_AVAILABLE, "jinja2 not installed")
+class TestSystemdTemplateRender(unittest.TestCase):
+    """Render SYSTEMD_ZERO_DOWNTIME with Jinja2 and assert the actual output."""
+
+    BASE_CTX = dict(
+        project_name="myapp",
+        app_user="app",
+        app_path="/home/app/apps/myapp",
+        manage_subdir="",
+        workers=4,
+        timeout=30,
+        umask="002",
+        wsgi_module="myapp.wsgi:application",
+    )
+
+    def _render(self, **overrides):
+        from jinja2 import Environment
+        from djaploy.infra.templates import SYSTEMD_ZERO_DOWNTIME
+        ctx = {**self.BASE_CTX, **overrides}
+        return Environment().from_string(SYSTEMD_ZERO_DOWNTIME).render(**ctx)
+
+    def _exec_start_lines(self, rendered):
+        """Return the ExecStart continuation block as a list of stripped lines."""
+        lines = rendered.splitlines()
+        in_exec = False
+        result = []
+        for line in lines:
+            if line.startswith("ExecStart="):
+                in_exec = True
+            if in_exec:
+                result.append(line.rstrip())
+                if not line.endswith("\\"):
+                    break
+        return result
+
+    def test_health_check_url_present_in_rendered_output(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        self.assertIn("--health-check-url http://localhost:8000/health/", rendered)
+
+    def test_health_check_url_absent_when_not_set(self):
+        rendered = self._render(health_check_url=None)
+        self.assertNotIn("--health-check-url", rendered)
+
+    def test_no_blank_lines_in_exec_start_without_health_check(self):
+        """A missing health_check_url must not leave a blank continuation line."""
+        rendered = self._render(health_check_url=None)
+        for line in self._exec_start_lines(rendered):
+            self.assertTrue(line.strip(), f"Blank line in ExecStart: {line!r}")
+
+    def test_no_blank_lines_in_exec_start_with_health_check(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        for line in self._exec_start_lines(rendered):
+            self.assertTrue(line.strip(), f"Blank line in ExecStart: {line!r}")
+
+    def test_health_check_line_comes_before_double_dash_separator(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        lines = self._exec_start_lines(rendered)
+        hc_idx = next(i for i, l in enumerate(lines) if "--health-check-url" in l)
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip() == "-- \\")
+        self.assertLess(hc_idx, sep_idx)
+
+    def test_double_dash_separator_always_present(self):
+        for url in [None, "http://localhost/health"]:
+            with self.subTest(health_check_url=url):
+                rendered = self._render(health_check_url=url)
+                lines = self._exec_start_lines(rendered)
+                self.assertTrue(
+                    any(l.strip() == "-- \\" for l in lines),
+                    "Missing '--' separator in ExecStart",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
