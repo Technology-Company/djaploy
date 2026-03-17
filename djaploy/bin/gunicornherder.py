@@ -248,6 +248,17 @@ class GunicornHerder:
             "    # after pre_exec uses the new path, not the old release\n"
             "    server.START_CTX['cwd'] = resolved\n"
             f"    server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)\n"
+            "\n"
+            "    # Update the Python executable (START_CTX[0]) to the new venv's python.\n"
+            "    # Without this, gunicorn re-execs using the OLD venv's sys.executable,\n"
+            "    # so new dependencies / package updates are never picked up.\n"
+            "    if server.START_CTX.get('args'):\n"
+            "        gunicorn_bin = os.path.realpath(server.START_CTX['args'][0])\n"
+            "        new_python = os.path.join(os.path.dirname(gunicorn_bin), 'python')\n"
+            "        if os.path.exists(new_python):\n"
+            "            new_python = os.path.realpath(new_python)\n"
+            "            server.START_CTX[0] = new_python\n"
+            "            server.log.info('pre_exec: updated python executable to %s', new_python)\n"
         )
         fd, path = tempfile.mkstemp(suffix=".py", prefix="gunicornherder_")
         with os.fdopen(fd, "w") as f:
