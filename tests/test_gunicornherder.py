@@ -65,7 +65,7 @@ class TestCreateConfig(unittest.TestCase):
                 pre_exec(server)
 
                 # cwd should be the resolved release path, not the symlink
-                self.assertEqual(server.START_CTX["cwd"], str(release))
+                self.assertEqual(server.START_CTX["cwd"], str(release.resolve()))
             finally:
                 os.unlink(config_path)
 
@@ -110,16 +110,81 @@ class TestCreateConfig(unittest.TestCase):
 
                 pre_exec(server)
 
-                # START_CTX[0] should now point to the NEW venv's python
-                self.assertEqual(
-                    server.START_CTX[0],
-                    str(new_python.resolve()),
-                )
+                # START_CTX[0] should point to python in the new venv's bin/ dir.
+                # Must NOT be resolved further (e.g. to /usr/bin/python3.11),
+                # because Python needs to start from inside the venv to find pyvenv.cfg.
+                # Use resolve() on the directory to handle OS-level dir symlinks
+                # (e.g. /var → /private/var on macOS) without following the
+                # python symlink itself.
+                new_venv_python = str((new_venv / "bin").resolve() / "python")
+                self.assertEqual(server.START_CTX[0], new_venv_python)
                 # Should NOT still be the old python
                 self.assertNotEqual(
                     server.START_CTX[0],
                     str(old_python.resolve()),
                 )
+            finally:
+                os.unlink(config_path)
+
+    def test_pre_exec_does_not_resolve_python_symlink(self):
+        """pre_exec must NOT resolve python to the system python.
+
+        In a real venv, bin/python is a symlink chain: python → python3 →
+        python3.11 → /usr/bin/python3.11.  If we follow all the way to
+        /usr/bin/python3.11, gunicorn re-execs outside the venv — Python
+        never finds pyvenv.cfg and the new packages are invisible.
+        START_CTX[0] must stay inside the venv's bin/ directory.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+
+            # Simulate system python living outside the venv
+            system_bin = tmpdir / "usr" / "bin"
+            system_bin.mkdir(parents=True)
+            system_python = system_bin / "python3.11"
+            system_python.write_text("#!/bin/sh\n# system python stub")
+            system_python.chmod(system_python.stat().st_mode | stat.S_IEXEC)
+
+            # New venv: gunicorn is a real file, python is a symlink chain
+            # (mirrors a real venv: python → python3 → python3.11 → system)
+            new_release = tmpdir / "releases" / "20260317_120000"
+            new_release.mkdir(parents=True)
+            new_venv = tmpdir / "shared" / "venv-newhash"
+            bin_dir = new_venv / "bin"
+            bin_dir.mkdir(parents=True)
+            gunicorn = bin_dir / "gunicorn"
+            gunicorn.write_text("#!/usr/bin/env python\n# gunicorn stub")
+            gunicorn.chmod(gunicorn.stat().st_mode | stat.S_IEXEC)
+            # python3.11 → system python (symlink, as in a real venv)
+            (bin_dir / "python3.11").symlink_to(system_python)
+            (bin_dir / "python3").symlink_to(bin_dir / "python3.11")
+            (bin_dir / "python").symlink_to(bin_dir / "python3")
+
+            (new_release / ".venv").symlink_to(new_venv)
+            current = tmpdir / "current"
+            current.symlink_to(new_release)
+            gunicorn_via_symlink = str(current / ".venv" / "bin" / "gunicorn")
+
+            herder = GunicornHerder(
+                pidfile="/tmp/test.pid",
+                cmd=[gunicorn_via_symlink, "app:app"],
+                app_dir=str(current),
+            )
+            config_path = herder._create_config()
+            try:
+                pre_exec = self._load_pre_exec(config_path)
+                server = self._make_mock_server(
+                    str(system_python),
+                    [gunicorn_via_symlink, "app:app"],
+                )
+                pre_exec(server)
+
+                # Must be the venv's bin/python — NOT the system python
+                self.assertEqual(
+                    server.START_CTX[0],
+                    str((new_venv / "bin").resolve() / "python"),
+                )
+                self.assertNotEqual(server.START_CTX[0], str(system_python.resolve()))
             finally:
                 os.unlink(config_path)
 
@@ -237,7 +302,7 @@ class TestCreateConfig(unittest.TestCase):
                 pre_exec(server)
 
                 # cwd should resolve to the subdirectory
-                self.assertEqual(server.START_CTX["cwd"], str(subdir))
+                self.assertEqual(server.START_CTX["cwd"], str(subdir.resolve()))
                 # Python should be updated to the new venv
                 self.assertEqual(server.START_CTX[0], str(python.resolve()))
             finally:

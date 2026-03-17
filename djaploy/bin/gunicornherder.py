@@ -306,7 +306,6 @@ class GunicornHerder:
             "        gunicorn_bin = os.path.realpath(server.START_CTX['args'][0])\n"
             "        new_python = os.path.join(os.path.dirname(gunicorn_bin), 'python')\n"
             "        if os.path.exists(new_python):\n"
-            "            new_python = os.path.realpath(new_python)\n"
             "            server.START_CTX[0] = new_python\n"
             "            server.log.info('pre_exec: updated python executable to %s', new_python)\n"
         )
