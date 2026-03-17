@@ -1,0 +1,41 @@
+services:
+  # Target server — simulates a remote deployment target
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: djaploy-test-server
+    privileged: true
+    volumes:
+      - ssh-keys:/home/deploy/.ssh
+    ports:
+      - "2222:22"   # SSH
+      - "8080:80"   # Nginx → Django
+    tmpfs:
+      - /run
+      - /run/lock
+
+  # Helper to extract SSH keys for the host
+  ssh-keygen:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: djaploy-ssh-keygen
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        cp /home/deploy/.ssh/id_ed25519 /keys/id_ed25519
+        cp /home/deploy/.ssh/id_ed25519.pub /keys/id_ed25519.pub
+        chmod 600 /keys/id_ed25519
+        echo "SSH keys copied to ./keys/"
+    volumes:
+      - ssh-keys:/home/deploy/.ssh
+      - ./keys:/keys
+    depends_on:
+      - server
+    profiles:
+      - setup
+
+volumes:
+  ssh-keys:

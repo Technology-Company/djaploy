@@ -42,6 +42,7 @@ bunny = ["certbot-dns-bunny<=0.0.9"]
 
 [project.scripts]
 djaploy-django-pyinfra = "djaploy.bin.django_pyinfra:main"
+gunicornherder = "djaploy.bin.gunicornherder:main"
 [project.urls]
 Homepage = "https://github.com/Technology-Company/djaploy"
 Repository = "https://github.com/Technology-Company/djaploy"
