@@ -429,7 +429,13 @@ def restore_rclone(host_data, restore_opts):
         backup_host_name: name of the host whose backups to restore from
         date: backup date folder (YYYY-MM-DD)
         db_only: if True, skip media restore
+        backend: if set, only run when "rclone"
     """
+    # Skip if a different backend was explicitly requested
+    backend = restore_opts.get("backend", "")
+    if backend and backend != "rclone":
+        return
+
     from pyinfra.operations import server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"

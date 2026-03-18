@@ -143,6 +143,8 @@ def restore_from_backup(inventory_file: str,
         "backup_host_name": restore_opts.get("backup_host_name", ""),
         "date": restore_opts.get("date", ""),
         "db_only": str(restore_opts.get("db_only", False)).lower(),
+        "archive": restore_opts.get("archive", ""),
+        "backend": restore_opts.get("backend", ""),
     })
     run_command({
         "command": "restore",

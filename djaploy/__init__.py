@@ -4,7 +4,7 @@ djaploy - Modular Django deployment system based on pyinfra
 
 default_app_config = "djaploy.app.DjaployConfig"
 
-from .config import HostConfig, BackupConfig
+from .config import HostConfig, BackupConfig, BorgBackupConfig
 from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project, create_janitor_user, run_command
 from .version import __version__
 
@@ -48,6 +48,7 @@ __all__ = [
     # Core
     "HostConfig",
     "BackupConfig",
+    "BorgBackupConfig",
     "deploy_project",
     "configure_server",
     "rollback_project",
