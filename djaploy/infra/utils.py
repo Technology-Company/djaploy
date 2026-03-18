@@ -200,7 +200,8 @@ def install_dependencies(app_user: str, app_path: str, host_data):
             else:
                 commands.append(
                     f"{poetry_bin} lock --no-upgrade 2>/dev/null"
-                    f" || {poetry_bin} lock --no-update"
+                    f" || {poetry_bin} lock --no-update 2>/dev/null"
+                    f" || {poetry_bin} lock"
                 )
 
         # Set HOME explicitly — sudo without login shell doesn't set it.
@@ -268,7 +269,8 @@ def install_dependencies(app_user: str, app_path: str, host_data):
         else:
             commands.append(
                 f"{poetry_bin} lock --no-upgrade 2>/dev/null"
-                f" || {poetry_bin} lock --no-update"
+                f" || {poetry_bin} lock --no-update 2>/dev/null"
+                f" || {poetry_bin} lock"
             )
 
     commands.append(poetry_cmd)
