@@ -419,7 +419,9 @@ class TestHealthCheck(unittest.TestCase):
     @unittest.mock.patch("djaploy.bin.gunicornherder.urllib.request.urlopen")
     def test_reload_rolls_back_on_health_check_failure(self, mock_urlopen):
         """_do_reload should TERM the new master and keep old on health failure."""
-        herder = self._make_herder()
+        # timeout=0 makes the post-rollback wait loop exit immediately
+        # (new_pid stays "alive" per mock, so we hit the else/warning path).
+        herder = self._make_herder(timeout=0)
         mock_urlopen.side_effect = ConnectionRefusedError("refused")
 
         old_pid, new_pid = 100, 200
@@ -439,6 +441,27 @@ class TestHealthCheck(unittest.TestCase):
         signals_to_old = [sig for pid, sig in calls if pid == old_pid]
         self.assertNotIn(signal.SIGWINCH, signals_to_old)
         self.assertNotIn(signal.SIGQUIT, signals_to_old)
+
+    @unittest.mock.patch("djaploy.bin.gunicornherder.urllib.request.urlopen")
+    def test_rollback_waits_for_new_master_to_exit(self, mock_urlopen):
+        """After rollback SIGTERM, _do_reload should wait for the new master to die."""
+        herder = self._make_herder(timeout=5)
+        mock_urlopen.side_effect = ConnectionRefusedError("refused")
+
+        old_pid, new_pid = 100, 200
+        # new_pid is alive on first _pid_alive call (wait loop) then dead
+        pid_alive_responses = iter([True, True, False])
+
+        with unittest.mock.patch.object(herder, "_read_pid", return_value=old_pid), \
+             unittest.mock.patch.object(herder, "_signal", return_value=True), \
+             unittest.mock.patch.object(herder, "_wait_for_new_pid", return_value=new_pid), \
+             unittest.mock.patch.object(herder, "_pid_alive",
+                                        side_effect=lambda _: next(pid_alive_responses,
+                                                                    False)):
+            with self.assertLogs("gunicornherder", level="INFO") as cm:
+                herder._do_reload()
+
+        self.assertTrue(any("exited after rollback" in line for line in cm.output))
 
 
 class TestVenvActivationOnReexec(unittest.TestCase):

@@ -23,7 +23,9 @@ WorkingDirectory={{ app_path }}/current{% if manage_subdir %}/{{ manage_subdir }
 ExecStart=/usr/local/bin/gunicornherder \\
     --pidfile /run/{{ project_name }}/gunicorn.pid \\
     --app-dir {{ app_path }}/current{% if manage_subdir %}/{{ manage_subdir }}{% endif %}{% if health_check_url %} \\
-    --health-check-url {{ health_check_url }}{% endif %} \\
+    --health-check-url {{ health_check_url }} \\
+    --health-check-retries {{ health_check_retries }} \\
+    --health-check-interval {{ health_check_interval }}{% endif %} \\
     -- \\
     {{ app_path }}/current/.venv/bin/gunicorn \\
         --workers {{ workers }} \\
@@ -233,6 +235,8 @@ def build_template_context(host_data):
         "umask": gunicorn_cfg.get("umask", "002"),
         "wsgi_module": wsgi_module,
         "health_check_url": gunicorn_cfg.get("health_check_url"),
+        "health_check_retries": gunicorn_cfg.get("health_check_retries", 3),
+        "health_check_interval": gunicorn_cfg.get("health_check_interval", 2),
         # nginx
         "server_name": server_name,
         "listen": nginx_cfg.get("listen", "80 default_server"),

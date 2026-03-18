@@ -234,6 +234,11 @@ def install_dependencies(app_user: str, app_path: str, host_data):
             f'python{python_version} -m venv "$VENV_DIR" && '
             f'ln -sfn "$VENV_DIR" .venv && '
             f'{home_prefix} POETRY_VIRTUALENVS_IN_PROJECT=true {poetry_cmd} && '
+            # Rewrite shebangs to the absolute venv python path so that
+            # gunicornherder's pre_exec hook can read them on USR2 re-exec.
+            # INVARIANT: when the venv is reused (else branch below), the
+            # shebangs already contain the correct $VENV_DIR path from when
+            # the venv was first created — no rewrite needed on reuse.
             f'for s in "$VENV_DIR"/bin/*; do '
             f'head -1 "$s" 2>/dev/null | grep -q python && '
             f'sed -i "1s|#\\!.*|#!$VENV_DIR/bin/python{python_version}|" "$s"; '

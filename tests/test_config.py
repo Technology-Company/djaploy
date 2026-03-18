@@ -120,6 +120,19 @@ class TestBuildTemplateContext(unittest.TestCase):
         self.assertEqual(ctx["workers"], 4)
         self.assertEqual(ctx["health_check_url"], "http://localhost/health")
 
+    def test_health_check_retries_default(self):
+        ctx = self._build(gunicorn_conf={})
+        self.assertEqual(ctx["health_check_retries"], 3)
+
+    def test_health_check_interval_default(self):
+        ctx = self._build(gunicorn_conf={})
+        self.assertEqual(ctx["health_check_interval"], 2)
+
+    def test_health_check_retries_override(self):
+        ctx = self._build(gunicorn_conf={"health_check_retries": 5, "health_check_interval": 10})
+        self.assertEqual(ctx["health_check_retries"], 5)
+        self.assertEqual(ctx["health_check_interval"], 10)
+
 
 class TestSystemdTemplate(unittest.TestCase):
     """Test the SYSTEMD_ZERO_DOWNTIME template string structure."""
@@ -157,6 +170,8 @@ class TestSystemdTemplateRender(unittest.TestCase):
         timeout=30,
         umask="002",
         wsgi_module="myapp.wsgi:application",
+        health_check_retries=3,
+        health_check_interval=2,
     )
 
     def _render(self, **overrides):
@@ -204,6 +219,17 @@ class TestSystemdTemplateRender(unittest.TestCase):
         hc_idx = next(i for i, l in enumerate(lines) if "--health-check-url" in l)
         sep_idx = next(i for i, l in enumerate(lines) if l.strip() == "-- \\")
         self.assertLess(hc_idx, sep_idx)
+
+    def test_health_check_retries_and_interval_rendered(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/",
+                                health_check_retries=5, health_check_interval=10)
+        self.assertIn("--health-check-retries 5", rendered)
+        self.assertIn("--health-check-interval 10", rendered)
+
+    def test_health_check_retries_absent_without_url(self):
+        rendered = self._render(health_check_url=None)
+        self.assertNotIn("--health-check-retries", rendered)
+        self.assertNotIn("--health-check-interval", rendered)
 
     def test_double_dash_separator_always_present(self):
         for url in [None, "http://localhost/health"]:

@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import urllib.request
 
@@ -157,6 +158,17 @@ class GunicornHerder:
                 self._signal(new_pid, signal.SIGTERM)
                 log.info("Sent TERM to new master (PID %d), keeping old master (PID %d)",
                          new_pid, old_pid)
+                # Wait for new master to actually exit so it doesn't linger
+                # and confuse future reloads (e.g. stale pidfile.2).
+                deadline = time.monotonic() + self.timeout
+                while time.monotonic() < deadline:
+                    if not self._pid_alive(new_pid):
+                        log.info("New master (PID %d) exited after rollback", new_pid)
+                        break
+                    time.sleep(0.2)
+                else:
+                    log.warning("New master (PID %d) did not exit within %ds after rollback",
+                                new_pid, self.timeout)
                 return
 
         # Step 3: WINCH — old master stops accepting, workers drain
@@ -286,48 +298,46 @@ class GunicornHerder:
 
     def _create_config(self):
         """Create a temporary gunicorn config with a pre_exec hook."""
-        # Escape backslashes/quotes in path for safety
+        # Escape backslashes/quotes in path for embedding in a Python string literal.
         safe_path = self.app_dir.replace("\\", "\\\\").replace("'", "\\'")
-        content = (
-            "import os\n"
-            "\n"
-            "def pre_exec(server):\n"
-            f"    os.chdir('{safe_path}')\n"
-            "    resolved = os.getcwd()\n"
-            "    # Update START_CTX so gunicorn's os.chdir(START_CTX['cwd'])\n"
-            "    # after pre_exec uses the new path, not the old release\n"
-            "    server.START_CTX['cwd'] = resolved\n"
-            f"    server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)\n"
-            "\n"
-            "    # Update the Python executable (START_CTX[0]) to the new venv's python.\n"
-            "    # Without this, gunicorn re-execs using the OLD venv's sys.executable,\n"
-            "    # so new dependencies / package updates are never picked up.\n"
-            "    if server.START_CTX.get('args'):\n"
-            "        gunicorn_bin = os.path.realpath(server.START_CTX['args'][0])\n"
-            "        # Read the shebang from the resolved gunicorn script.\n"
-            "        # The deploy step rewrites it to the new venv's absolute python path,\n"
-            "        # so using it directly as the executable guarantees the venv activates:\n"
-            "        # Python finds pyvenv.cfg one level above the shebang binary's directory.\n"
-            "        new_python = None\n"
-            "        try:\n"
-            "            with open(gunicorn_bin, 'rb') as _f:\n"
-            "                _first_line = _f.readline()\n"
-            "            _shebang = _first_line.decode('utf-8', errors='replace').strip()\n"
-            "            if _shebang.startswith('#!'):\n"
-            "                _candidate = _shebang[2:].strip().split()[0]\n"
-            "                if os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):\n"
-            "                    new_python = _candidate\n"
-            "        except (IOError, OSError):\n"
-            "            pass\n"
-            "        # Fallback: look for 'python' alongside the gunicorn script\n"
-            "        if not new_python:\n"
-            "            _candidate = os.path.join(os.path.dirname(gunicorn_bin), 'python')\n"
-            "            if os.path.exists(_candidate):\n"
-            "                new_python = _candidate\n"
-            "        if new_python:\n"
-            "            server.START_CTX[0] = new_python\n"
-            "            server.log.info('pre_exec: updated python executable to %s', new_python)\n"
-        )
+        content = textwrap.dedent(f"""\
+            import os
+
+            def pre_exec(server):
+                # Update START_CTX so gunicorn's os.chdir(START_CTX['cwd'])
+                # after pre_exec uses the new release path, not the old one.
+                os.chdir('{safe_path}')
+                resolved = os.getcwd()
+                server.START_CTX['cwd'] = resolved
+                server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)
+
+                # Update START_CTX[0] to the new venv's python.
+                # The deploy step rewrites each script shebang to the venv's absolute
+                # python path (e.g. $VENV_DIR/bin/python3.11).  Reading it here and
+                # using it as the re-exec executable guarantees the correct Python
+                # version and venv are used — matching how the initial startup works
+                # via the kernel shebang mechanism.
+                if server.START_CTX.get('args'):
+                    gunicorn_bin = os.path.realpath(server.START_CTX['args'][0])
+                    new_python = None
+                    try:
+                        with open(gunicorn_bin, 'r', errors='replace') as _f:
+                            _shebang = _f.readline().strip()
+                        if _shebang.startswith('#!'):
+                            _candidate = _shebang[2:].strip().split()[0]
+                            if os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
+                                new_python = _candidate
+                    except (IOError, OSError):
+                        pass
+                    # Fallback: 'python' alongside the gunicorn script
+                    if not new_python:
+                        _candidate = os.path.join(os.path.dirname(gunicorn_bin), 'python')
+                        if os.path.exists(_candidate):
+                            new_python = _candidate
+                    if new_python:
+                        server.START_CTX[0] = new_python
+                        server.log.info('pre_exec: updated python executable to %s', new_python)
+        """)
         fd, path = tempfile.mkstemp(suffix=".py", prefix="gunicornherder_")
         with os.fdopen(fd, "w") as f:
             f.write(content)
