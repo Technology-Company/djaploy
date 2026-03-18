@@ -146,19 +146,24 @@ def deploy_config_files(host_data, app_path: str):
         **ctx,
     )
 
-    # Select nginx template: SSL when domains with certs are configured
-    if "ssl_certificate" in ctx:
-        nginx_tpl = NGINX_SITE_SSL
-    else:
-        nginx_tpl = NGINX_SITE
+    # Skip built-in nginx template when a custom nginx module handles it
+    # (e.g. bostad's nginx_sites.py with multi-domain SSL from 1Password).
+    # Set nginx_conf={"custom": True} on HostConfig to skip.
+    nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+    if not nginx_cfg.get("custom"):
+        # Select nginx template: SSL when domains with certs are configured
+        if "ssl_certificate" in ctx:
+            nginx_tpl = NGINX_SITE_SSL
+        else:
+            nginx_tpl = NGINX_SITE
 
-    files.template(
-        name=f"Render {app_name} nginx config",
-        src=StringIO(nginx_tpl),
-        dest=f"/etc/nginx/sites-available/{app_name}",
-        _sudo=True,
-        **ctx,
-    )
+        files.template(
+            name=f"Render {app_name} nginx config",
+            src=StringIO(nginx_tpl),
+            dest=f"/etc/nginx/sites-available/{app_name}",
+            _sudo=True,
+            **ctx,
+        )
 
 
 def install_dependencies(app_user: str, app_path: str, host_data):
