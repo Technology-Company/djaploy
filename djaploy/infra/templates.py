@@ -107,6 +107,56 @@ server {
 }
 """
 
+NGINX_SITE_SSL = """\
+upstream {{ project_name }} {
+    server unix:/run/{{ project_name }}/{{ project_name }}.sock fail_timeout=0;
+}
+
+server {
+    listen 443 ssl;
+    server_name {{ server_name }};
+
+    ssl_certificate {{ ssl_certificate }};
+    ssl_certificate_key {{ ssl_certificate_key }};
+
+    client_max_body_size {{ client_max_body_size }};
+
+    location /static/ {
+        alias {{ static_path }}/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /media/ {
+        alias {{ media_path }}/;
+        expires 30d;
+    }
+
+    location / {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+        proxy_pass http://{{ project_name }};
+    }
+}
+
+server {
+    listen 80;
+    server_name {{ server_name }};
+
+    location /.well-known/acme-challenge/ {
+        alias /var/www/challenges/;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+"""
+
 
 # ---------------------------------------------------------------------------
 # Context builder
@@ -154,7 +204,25 @@ def build_template_context(host_data):
         static_path = f"{app_path}/staticfiles"
         media_path = f"{app_path}/media"
 
-    return {
+    # Derive SSL cert paths from domains if available
+    domains = getattr(host_data, 'domains', None) or []
+    ssl_identifier = None
+    if domains:
+        first_domain = domains[0]
+        if isinstance(first_domain, dict):
+            ssl_identifier = first_domain.get('identifier')
+        elif hasattr(first_domain, 'identifier'):
+            ssl_identifier = first_domain.identifier
+
+    # Derive server_name from domains or nginx_conf
+    server_name = nginx_cfg.get("server_name")
+    if not server_name and ssl_identifier:
+        server_name = ssl_identifier
+    if not server_name:
+        app_hostname = getattr(host_data, 'app_hostname', None)
+        server_name = app_hostname or "_"
+
+    ctx = {
         "project_name": app_name,
         "app_user": app_user,
         "app_path": app_path,
@@ -166,9 +234,15 @@ def build_template_context(host_data):
         "wsgi_module": wsgi_module,
         "health_check_url": gunicorn_cfg.get("health_check_url"),
         # nginx
-        "server_name": nginx_cfg.get("server_name", "_"),
+        "server_name": server_name,
         "listen": nginx_cfg.get("listen", "80 default_server"),
         "client_max_body_size": nginx_cfg.get("client_max_body_size", "10M"),
         "static_path": static_path,
         "media_path": media_path,
     }
+
+    if ssl_identifier:
+        ctx["ssl_certificate"] = f"/home/{app_user}/.ssl/{ssl_identifier}.crt"
+        ctx["ssl_certificate_key"] = f"/home/{app_user}/.ssl/{ssl_identifier}.key"
+
+    return ctx

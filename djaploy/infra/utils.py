@@ -123,7 +123,7 @@ def deploy_config_files(host_data, app_path: str):
     from io import StringIO
     from pyinfra.operations import files
     from djaploy.infra.templates import (
-        SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, NGINX_SITE,
+        SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, NGINX_SITE, NGINX_SITE_SSL,
         build_template_context,
     )
 
@@ -146,9 +146,15 @@ def deploy_config_files(host_data, app_path: str):
         **ctx,
     )
 
+    # Select nginx template: SSL when domains with certs are configured
+    if "ssl_certificate" in ctx:
+        nginx_tpl = NGINX_SITE_SSL
+    else:
+        nginx_tpl = NGINX_SITE
+
     files.template(
         name=f"Render {app_name} nginx config",
-        src=StringIO(NGINX_SITE),
+        src=StringIO(nginx_tpl),
         dest=f"/etc/nginx/sites-available/{app_name}",
         _sudo=True,
         **ctx,
