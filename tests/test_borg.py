@@ -144,6 +144,7 @@ class TestBorgBackupScriptGeneration(unittest.TestCase):
         if host_data is None:
             host_data = MagicMock()
             host_data.app_name = "myapp"
+            host_data.db_dir = None
         return _generate_backup_script(borg_config, app_user, repo_name, host_data)
 
     def test_script_has_shebang(self):

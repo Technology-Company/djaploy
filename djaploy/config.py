@@ -112,6 +112,10 @@ class BorgBackupConfig:
     keep_weekly: int = 4
     keep_monthly: int = 6
 
+    # Remote borg version (for Hetzner Storage Boxes: "borg-1.1", "borg-1.2", "borg-1.4")
+    # When set, adds --remote-path to all borg commands to select the server-side version.
+    remote_path: Optional[str] = None
+
     # Schedule (cron format)
     schedule: str = "0 2 * * *"
 
@@ -167,6 +171,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     keep_releases: int = 5  # Releases to keep (zero_downtime only)
     manage_py_path: str = "manage.py"  # Relative path to manage.py in the artifact
     db_dir: Optional[str] = None  # External database directory template
+    generate_local_settings: bool = False  # Generate local.py with DATABASES, ALLOWED_HOSTS, etc.
     shared_resources: Optional[List[str]] = None  # Paths to symlink from shared/
 
     # Per-module configuration (merged with defaults)
