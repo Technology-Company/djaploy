@@ -318,8 +318,15 @@ def run_migrations(app_user: str, app_path: str, host_data):
     python_cmd = get_python_cmd(app_user, app_path, host_data)
     migration_commands = []
     for db in databases:
+        # Extract alias from "alias:filename" format, or derive from filename
+        if ":" in db:
+            alias = db.split(":", 1)[0]
+        elif db.endswith((".db", ".sqlite3")):
+            alias = "default"
+        else:
+            alias = db
         migration_commands.append(
-            f"{python_cmd} {manage_py} migrate --database={db} --noinput"
+            f"{python_cmd} {manage_py} migrate --database={alias} --noinput"
         )
 
     server.shell(

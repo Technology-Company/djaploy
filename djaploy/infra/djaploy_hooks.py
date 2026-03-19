@@ -345,14 +345,25 @@ def generate_local_settings(host_data, artifact_path):
 
     if db_dir:
         core_conf = getattr(host_data, "core_conf", None) or {}
-        databases = core_conf.get("databases", ["default"])
+        databases = core_conf.get("databases", ["default:db.sqlite3"])
         if isinstance(databases, str):
             databases = [databases]
 
+        # Parse database entries: each can be "alias:filename", "alias",
+        # or just a filename like "db.sqlite3" (alias defaults to "default").
         lines.append("DATABASES = {")
-        for db_name in databases:
-            db_file = f"{db_name}.db" if not db_name.endswith((".db", ".sqlite3")) else db_name
-            lines.append(f'    "{db_name if db_name != "default" else "default"}": {{')
+        for i, entry in enumerate(databases):
+            if ":" in entry:
+                alias, db_file = entry.split(":", 1)
+            elif entry.endswith((".db", ".sqlite3")):
+                # Bare filename — first entry gets alias "default"
+                alias = "default" if i == 0 else entry.rsplit(".", 1)[0]
+                db_file = entry
+            else:
+                # Bare alias name — derive filename
+                alias = entry
+                db_file = f"{entry}.db"
+            lines.append(f'    "{alias}": {{')
             lines.append(f'        "ENGINE": "django.db.backends.sqlite3",')
             lines.append(f'        "NAME": "{db_dir}/{db_file}",')
             lines.append(f'    }},')
