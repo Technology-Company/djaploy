@@ -7,7 +7,7 @@ Deploys a VERSION file containing version, commit, timestamp, and environment in
 from djaploy.hooks import deploy_hook
 
 
-@deploy_hook("deploy")
+@deploy_hook("deploy:configure")
 def deploy_version_file(host_data, artifact_path):
     """Deploy VERSION file to server."""
     import os
