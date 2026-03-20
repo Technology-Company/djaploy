@@ -51,11 +51,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--target",
             type=str,
-            default="local",
+            default=None,
             help=(
-                "Where to restore: 'local' (default) restores the main DB locally, "
-                "or an environment name (e.g., dev, production-backup) to restore "
-                "all databases on that server via pyinfra."
+                "Where to restore: 'local' restores the main DB locally, "
+                "or an environment name to restore on that server via pyinfra. "
+                "Defaults to the --env value (server restore)."
             ),
         )
         parser.add_argument(
@@ -90,7 +90,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         env = options["env"]
-        target = options["target"]
+        target = options["target"] or env
         backend = options["backend"]
 
         # Resolve inventory file
