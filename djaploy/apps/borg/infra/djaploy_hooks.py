@@ -119,6 +119,8 @@ def _generate_backup_script(borg_config, app_user: str, repo_name: str,
     compression = borg_config.get("compression", "zstd,3")
     databases = borg_config.get("databases", ["default.db"])
     backup_media = borg_config.get("backup_media", True)
+    keep_within = borg_config.get("keep_within", None)
+    keep_hourly = borg_config.get("keep_hourly", 0)
     keep_daily = borg_config.get("keep_daily", 7)
     keep_weekly = borg_config.get("keep_weekly", 4)
     keep_monthly = borg_config.get("keep_monthly", 6)
@@ -138,6 +140,17 @@ def _generate_backup_script(borg_config, app_user: str, repo_name: str,
     rsh_export = f'\nexport BORG_RSH={shlex.quote(borg_rsh)}' if borg_rsh else ''
     remote_path = borg_config.get("remote_path", None)
     remote_path_export = f'\nexport BORG_REMOTE_PATH={shlex.quote(remote_path)}' if remote_path else ''
+
+    # Build prune retention args
+    prune_parts = []
+    if keep_within:
+        prune_parts.append(f"--keep-within={keep_within}")
+    if keep_hourly:
+        prune_parts.append(f"--keep-hourly={keep_hourly}")
+    prune_parts.append(f"--keep-daily={keep_daily}")
+    prune_parts.append(f"--keep-weekly={keep_weekly}")
+    prune_parts.append(f"--keep-monthly={keep_monthly}")
+    prune_args = " \\\n    ".join(prune_parts) + " "
 
     # Media section
     if backup_media:
@@ -237,9 +250,7 @@ ARCHIVE_NAME="{{hostname}}-{{now:%Y-%m-%dT%H:%M:%S}}"
 # 3. Prune old archives
 log_message "Pruning old archives"
 borg prune --list \\
-    --keep-daily={keep_daily} \\
-    --keep-weekly={keep_weekly} \\
-    --keep-monthly={keep_monthly} \\
+    {prune_args}\\
     "$BORG_REPO" \\
     2>&1 | tee -a "$LOG_FILE"
 

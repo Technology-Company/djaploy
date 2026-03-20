@@ -108,6 +108,8 @@ class BorgBackupConfig:
     media_path: Optional[str] = None
 
     # Retention policy (borg prune)
+    keep_within: Optional[str] = None  # Keep all archives within this period (e.g. "2d", "48H")
+    keep_hourly: int = 0               # Number of hourly archives to keep
     keep_daily: int = 7
     keep_weekly: int = 4
     keep_monthly: int = 6
