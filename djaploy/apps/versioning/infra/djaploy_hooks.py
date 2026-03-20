@@ -10,7 +10,6 @@ from djaploy.hooks import deploy_hook
 @deploy_hook("deploy:configure")
 def deploy_version_file(host_data, artifact_path):
     """Deploy VERSION file to server."""
-    import os
     import tempfile
     from datetime import datetime, timezone
 
@@ -45,17 +44,14 @@ ENVIRONMENT={env}
         f.write(version_content)
         temp_path = f.name
 
-    try:
-        files.put(
-            name=f"Deploy VERSION file to {dest_path}",
-            src=temp_path,
-            dest=dest_path,
-            user=app_user,
-            group=app_user,
-            mode="644",
-            _sudo=True,
-        )
-    finally:
-        os.unlink(temp_path)
+    files.put(
+        name=f"Deploy VERSION file to {dest_path}",
+        src=temp_path,
+        dest=dest_path,
+        user=app_user,
+        group=app_user,
+        mode="644",
+        _sudo=True,
+    )
 
     print(f"[VERSIONING] Deployed VERSION file: {version} ({commit[:7]})")
