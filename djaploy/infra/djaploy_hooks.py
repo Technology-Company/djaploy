@@ -30,18 +30,17 @@ def configure_server(host_data):
         _sudo=True,
     )
 
-    # For zero-downtime deploys, add www-data to app user group
-    if is_zero_downtime(host_data):
-        server.shell(
-            name="Add www-data to app user group",
-            commands=[f"usermod -aG {app_user} www-data"],
-            _sudo=True,
-        )
-        server.shell(
-            name="Allow group traversal of app user home",
-            commands=[f"chmod 711 /home/{app_user}"],
-            _sudo=True,
-        )
+a    # Add www-data to app user group so nginx can serve static/media files
+    server.shell(
+        name="Add www-data to app user group",
+        commands=[f"usermod -aG {app_user} www-data"],
+        _sudo=True,
+    )
+    server.shell(
+        name="Allow group traversal of app user home",
+        commands=[f"chmod 711 /home/{app_user}"],
+        _sudo=True,
+    )
 
     # Update apt repositories
     apt.update(
