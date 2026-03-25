@@ -97,6 +97,10 @@ def _init_borg_repo(borg_config, app_user: str, repo_name: str):
 
     # Unset PYTHONPATH to prevent borg (a Python script) from picking up
     # msgpack or other packages from the app's venv.
+    # NOTE: do NOT use _use_sudo_login=True here — sudo -i re-parses the
+    # command through a login shell, which breaks redirects (> /dev/null 2>&1)
+    # and causes `borg info` to fail even when the repo exists.  All binaries
+    # use absolute paths so a login shell is not required.
     server.shell(
         name="Initialize borg repository if needed",
         commands=[
@@ -108,7 +112,6 @@ def _init_borg_repo(borg_config, app_user: str, repo_name: str):
         ],
         _sudo=True,
         _sudo_user=app_user,
-        _use_sudo_login=True,
     )
 
 
