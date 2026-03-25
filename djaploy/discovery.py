@@ -103,6 +103,9 @@ def find_config() -> Optional[Path]:
     Searches each app's infra/config.py in INSTALLED_APPS order
     and returns the first match.
 
+    .. deprecated::
+        config.py is no longer required. Use :func:`find_infra_file` instead.
+
     Returns:
         Path to the config file, or None if not found.
     """
@@ -110,6 +113,28 @@ def find_config() -> Optional[Path]:
         config_file = infra_dir / "config.py"
         if config_file.is_file():
             return config_file
+    return None
+
+
+def find_infra_file(filename: str) -> Optional[Path]:
+    """
+    Find a file inside any app's infra/ directory.
+
+    Searches each app's infra/ directory in INSTALLED_APPS order
+    and returns the first match.
+
+    Args:
+        filename: File name to search for (e.g. "certificates.py")
+
+    Returns:
+        Path to the file, or None if not found.
+    """
+    if not _SAFE_NAME_RE.match(Path(filename).stem):
+        return None
+    for app_label, infra_dir in get_app_infra_dirs():
+        candidate = infra_dir / filename
+        if candidate.is_file():
+            return candidate
     return None
 
 

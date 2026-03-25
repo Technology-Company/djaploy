@@ -8,7 +8,7 @@ from pathlib import Path
 from django.core.management import BaseCommand, CommandError
 
 from djaploy import run_command
-from djaploy.discovery import find_config, find_inventory
+from djaploy.discovery import find_inventory
 from djaploy.deploy import _build_pyinfra_data
 
 

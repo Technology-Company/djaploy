@@ -9,7 +9,7 @@ from django.core.management import BaseCommand, CommandError
 from django.conf import settings
 
 from djaploy.certificates import discover_certificates, TailscaleDnsCertificate
-from djaploy.discovery import find_config
+from djaploy.discovery import find_infra_file
 from djaploy.management.utils import find_git_root
 
 
@@ -59,19 +59,11 @@ class Command(BaseCommand):
         os.environ['OP_ACCOUNT'] = settings.OP_ACCOUNT
 
         # Discover certificates from project
-        config_path = find_config()
-        djaploy_dir = config_path.parent if config_path else None
-        if not djaploy_dir:
-            djaploy_dir_setting = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
-            if djaploy_dir_setting:
-                djaploy_dir = Path(djaploy_dir_setting)
-        if not djaploy_dir:
-            raise CommandError("Cannot find djaploy config directory")
-
-        certificates_path = djaploy_dir / "certificates.py"
-        
-        if not certificates_path.exists():
-            raise CommandError(f"Certificates file not found at {certificates_path}")
+        certificates_path = find_infra_file("certificates.py")
+        if not certificates_path:
+            raise CommandError(
+                "No certificates.py found in any INSTALLED_APPS infra/ directory"
+            )
         
         certificates = discover_certificates(str(certificates_path))
         
@@ -108,7 +100,7 @@ class Command(BaseCommand):
                         email=email,
                         is_staging=is_staging,
                         git_dir=git_dir,
-                        djaploy_dir=djaploy_dir,
+                        djaploy_dir=certificates_path.parent,
                     )
                     
                     # Upload to 1Password

@@ -7,7 +7,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand
 from django.conf import settings
 
-from djaploy.discovery import find_config
+from djaploy.discovery import find_infra_file, get_app_infra_dirs
 
 
 class Command(BaseCommand):
@@ -85,12 +85,12 @@ class Command(BaseCommand):
         self.stdout.write("-" * 40)
 
         try:
-            config_path = find_config()
-            if config_path:
-                self.stdout.write(self.style.SUCCESS(f"  ✓ Config found: {config_path}"))
+            hooks_path = find_infra_file("djaploy_hooks.py")
+            if hooks_path:
+                self.stdout.write(self.style.SUCCESS(f"  ✓ Hooks found: {hooks_path}"))
             else:
-                self.warnings.append("No config.py found via discovery")
-                self.stdout.write(self.style.WARNING("  ⚠ No config.py found in INSTALLED_APPS infra/ directories"))
+                self.warnings.append("No djaploy_hooks.py found via discovery")
+                self.stdout.write(self.style.WARNING("  ⚠ No djaploy_hooks.py found in INSTALLED_APPS infra/ directories"))
 
             git_dir = getattr(settings, 'GIT_DIR', None)
             if git_dir:
@@ -112,7 +112,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.HTTP_INFO("3. Inventory"))
         self.stdout.write("-" * 40)
 
-        from djaploy.discovery import get_app_infra_dirs
         from djaploy.deploy import _load_inventory_hosts
 
         # Find all inventory dirs
