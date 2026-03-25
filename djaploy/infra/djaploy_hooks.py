@@ -30,7 +30,7 @@ def configure_server(host_data):
         _sudo=True,
     )
 
-a    # Add www-data to app user group so nginx can serve static/media files
+    # Add www-data to app user group so nginx can serve static/media files
     server.shell(
         name="Add www-data to app user group",
         commands=[f"usermod -aG {app_user} www-data"],
