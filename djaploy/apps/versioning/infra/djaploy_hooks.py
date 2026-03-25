@@ -7,10 +7,9 @@ Deploys a VERSION file containing version, commit, timestamp, and environment in
 from djaploy.hooks import deploy_hook
 
 
-@deploy_hook("deploy")
-def deploy_version_file(host_data, project_config, artifact_path):
+@deploy_hook("deploy:configure")
+def deploy_version_file(host_data, artifact_path):
     """Deploy VERSION file to server."""
-    import os
     import tempfile
     from datetime import datetime, timezone
 
@@ -24,12 +23,14 @@ def deploy_version_file(host_data, project_config, artifact_path):
         print("[VERSIONING] No version info provided, skipping VERSION file deployment")
         return
 
-    app_user = getattr(host_data, "app_user", None) or project_config.app_user
-    project_name = project_config.project_name
+    app_user = getattr(host_data, "app_user", "app")
+    app_name = getattr(host_data, 'app_name', None)
+    if not app_name:
+        return
 
-    module_config = getattr(project_config, 'module_configs', {}).get("versioning", {})
+    module_config = getattr(host_data, 'versioning_conf', None) or {}
     version_file_path = module_config.get("version_file_path", "VERSION")
-    app_root = f"/home/{app_user}/apps/{project_name}"
+    app_root = f"/home/{app_user}/apps/{app_name}"
     dest_path = f"{app_root}/{version_file_path}"
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -43,17 +44,14 @@ ENVIRONMENT={env}
         f.write(version_content)
         temp_path = f.name
 
-    try:
-        files.put(
-            name=f"Deploy VERSION file to {dest_path}",
-            src=temp_path,
-            dest=dest_path,
-            user=app_user,
-            group=app_user,
-            mode="644",
-            _sudo=True,
-        )
-    finally:
-        os.unlink(temp_path)
+    files.put(
+        name=f"Deploy VERSION file to {dest_path}",
+        src=temp_path,
+        dest=dest_path,
+        user=app_user,
+        group=app_user,
+        mode="644",
+        _sudo=True,
+    )
 
     print(f"[VERSIONING] Deployed VERSION file: {version} ({commit[:7]})")

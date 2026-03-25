@@ -68,13 +68,13 @@ sha1sum_command = none"""
 
 
 def _deploy_backup_script(backup_config, app_user: str,
-                          host_name: str, project_config):
+                          host_name: str, host_data):
     """Deploy backup script."""
     from pyinfra.operations import files
 
     # Get backup paths
     db_path = backup_config.get("db_path") or f"/home/{app_user}/dbs"
-    media_path = backup_config.get("media_path") or f"/home/{app_user}/apps/{project_config.project_name}/media"
+    media_path = backup_config.get("media_path") or f"/home/{app_user}/apps/{getattr(host_data, 'app_name', '')}/media"
     retention_days = backup_config.get("retention_days", 30)
 
     # Get database names from config
@@ -356,7 +356,7 @@ def _setup_backup_cron(backup_config, app_user: str):
 # ------------------------------------------------------------------
 
 @deploy_hook("configure")
-def configure_rclone(host_data, project_config):
+def configure_rclone(host_data):
     """Install rclone and setup backup directories."""
     from pyinfra.operations import apt, files
 
@@ -398,7 +398,7 @@ def configure_rclone(host_data, project_config):
 
 
 @deploy_hook("deploy:configure")
-def deploy_rclone(host_data, project_config, artifact_path):
+def deploy_rclone(host_data, artifact_path):
     """Deploy backup configuration and scripts."""
 
     backup_config = getattr(host_data, 'backup', None)
@@ -412,14 +412,14 @@ def deploy_rclone(host_data, project_config, artifact_path):
     _deploy_rclone_config(backup_config, app_user, host_data)
 
     # Deploy backup script
-    _deploy_backup_script(backup_config, app_user, host_name, project_config)
+    _deploy_backup_script(backup_config, app_user, host_name, host_data)
 
     # Setup cron job
     _setup_backup_cron(backup_config, app_user)
 
 
 @deploy_hook("restore")
-def restore_rclone(host_data, project_config, restore_opts):
+def restore_rclone(host_data, restore_opts):
     """Restore databases and media from rclone backup on the target server.
 
     The target server must already have rclone configured (via deploy).
@@ -429,7 +429,13 @@ def restore_rclone(host_data, project_config, restore_opts):
         backup_host_name: name of the host whose backups to restore from
         date: backup date folder (YYYY-MM-DD)
         db_only: if True, skip media restore
+        backend: if set, only run when "rclone"
     """
+    # Skip if a different backend was explicitly requested
+    backend = restore_opts.get("backend", "")
+    if backend and backend != "rclone":
+        return
+
     from pyinfra.operations import server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"
@@ -445,7 +451,7 @@ def restore_rclone(host_data, project_config, restore_opts):
     media_path = (
         backup_config.get("media_path") if isinstance(backup_config, dict)
         else getattr(backup_config, "media_path", None)
-    ) or f"/home/{app_user}/apps/{project_config.project_name}/media"
+    ) or f"/home/{app_user}/apps/{getattr(host_data, 'app_name', '')}/media"
 
     backup_host_name = restore_opts.get("backup_host_name", "unknown")
     date = restore_opts.get("date", "")

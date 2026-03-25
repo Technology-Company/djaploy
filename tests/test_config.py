@@ -1,195 +1,245 @@
-"""Tests for DjaployConfig deployment strategy configuration"""
+"""Tests for HostConfig configuration"""
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from djaploy.config import DjaployConfig
+from djaploy.config import HostConfig
 
 
-class TestDeploymentStrategyConfig(unittest.TestCase):
-    """Test deployment_strategy, keep_releases, and shared_resources config fields"""
+class TestHostConfig(unittest.TestCase):
+    """Test HostConfig with deployment settings"""
 
-    def test_default_strategy_is_in_place(self):
-        config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-        self.assertEqual(config.deployment_strategy, "in_place")
+    def test_required_fields(self):
+        host = HostConfig("server", ssh_hostname="1.2.3.4", app_name="myapp")
+        name, data = host
+        self.assertEqual(name, "server")
+        self.assertEqual(data["ssh_hostname"], "1.2.3.4")
+        self.assertEqual(data["app_name"], "myapp")
 
-    def test_zero_downtime_strategy(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
+    def test_defaults(self):
+        host = HostConfig("server", ssh_hostname="1.2.3.4", app_name="myapp")
+        _, data = host
+        self.assertEqual(data["ssh_user"], "deploy")
+        self.assertEqual(data["app_user"], "app")
+        self.assertEqual(data["python_version"], "3.11")
+        self.assertEqual(data["deployment_strategy"], "zero_downtime")
+        self.assertEqual(data["keep_releases"], 5)
+        self.assertEqual(data["manage_py_path"], "manage.py")
+        self.assertFalse(data["python_compile"])
+
+    def test_override_deployment_settings(self):
+        host = HostConfig(
+            "server",
+            ssh_hostname="1.2.3.4",
+            app_name="myapp",
+            python_version="3.13",
+            deployment_strategy="in_place",
+            keep_releases=3,
+        )
+        _, data = host
+        self.assertEqual(data["python_version"], "3.13")
+        self.assertEqual(data["deployment_strategy"], "in_place")
+        self.assertEqual(data["keep_releases"], 3)
+
+    def test_module_confs(self):
+        host = HostConfig(
+            "server",
+            ssh_hostname="1.2.3.4",
+            app_name="myapp",
+            gunicorn_conf={"workers": 4, "timeout": 60},
+            nginx_conf={"server_name": "example.com"},
+        )
+        _, data = host
+        self.assertEqual(data["gunicorn_conf"]["workers"], 4)
+        self.assertEqual(data["nginx_conf"]["server_name"], "example.com")
+
+    def test_ssh_key_expanded(self):
+        host = HostConfig(
+            "server",
+            ssh_hostname="1.2.3.4",
+            app_name="myapp",
+            ssh_key="~/.ssh/id_rsa",
+        )
+        _, data = host
+        self.assertNotIn("~", data["ssh_key"])
+
+    def test_app_name_required(self):
+        with self.assertRaises(ValueError):
+            HostConfig("server", ssh_hostname="1.2.3.4")
+
+    def test_extra_kwargs_passed_through(self):
+        host = HostConfig(
+            "server",
+            ssh_hostname="1.2.3.4",
+            app_name="myapp",
+            janitor_password="secret",
+        )
+        _, data = host
+        self.assertEqual(data["janitor_password"], "secret")
+
+
+class TestBuildTemplateContext(unittest.TestCase):
+    """Test that build_template_context maps HostConfig fields to template vars."""
+
+    def _make_host_data(self, **kwargs):
+        """Return a simple object with attributes, simulating pyinfra host_data."""
+        from types import SimpleNamespace
+        defaults = dict(
+            app_user="app",
+            app_name="myapp",
             deployment_strategy="zero_downtime",
+            manage_py_path="manage.py",
+            gunicorn_conf={},
+            nginx_conf={},
         )
-        self.assertEqual(config.deployment_strategy, "zero_downtime")
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
 
-    def test_default_keep_releases(self):
-        config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-        self.assertEqual(config.keep_releases, 5)
+    def _build(self, **kwargs):
+        from djaploy.infra.templates import build_template_context
+        from unittest.mock import patch
+        host_data = self._make_host_data(**kwargs)
+        with patch("djaploy.infra.utils.get_app_path", return_value="/home/app/apps/myapp"), \
+             patch("djaploy.infra.utils.is_zero_downtime", return_value=True):
+            return build_template_context(host_data)
 
-    def test_custom_keep_releases(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            keep_releases=10,
-        )
-        self.assertEqual(config.keep_releases, 10)
+    def test_health_check_url_passed_through(self):
+        ctx = self._build(gunicorn_conf={"health_check_url": "http://localhost:8000/health/"})
+        self.assertEqual(ctx["health_check_url"], "http://localhost:8000/health/")
 
-    def test_custom_shared_resources(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            shared_resources=["public/media", "private_media"],
-        )
-        self.assertEqual(config.shared_resources, ["public/media", "private_media"])
+    def test_health_check_url_defaults_to_none(self):
+        ctx = self._build(gunicorn_conf={})
+        self.assertIsNone(ctx["health_check_url"])
 
-    def test_explicit_empty_shared_resources(self):
-        """Explicitly setting [] should not trigger auto-detection"""
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            shared_resources=[],
-        )
-        self.assertEqual(config.shared_resources, [])
+    def test_health_check_url_none_when_gunicorn_conf_absent(self):
+        ctx = self._build(gunicorn_conf=None)
+        self.assertIsNone(ctx["health_check_url"])
 
-    def test_shared_resources_not_shared_between_instances(self):
-        """Ensure separate lists per instance"""
-        config1 = DjaployConfig(project_name="a", djaploy_dir="/tmp/infra",
-                                shared_resources=["media"])
-        config2 = DjaployConfig(project_name="b", djaploy_dir="/tmp/infra",
-                                shared_resources=["media"])
-        config1.shared_resources.append("logs")
-        self.assertNotIn("logs", config2.shared_resources)
+    def test_standard_gunicorn_fields_still_present(self):
+        ctx = self._build(gunicorn_conf={"workers": 4, "health_check_url": "http://localhost/health"})
+        self.assertEqual(ctx["workers"], 4)
+        self.assertEqual(ctx["health_check_url"], "http://localhost/health")
 
-    def test_validate_passes_with_zero_downtime(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            deployment_strategy="zero_downtime",
-        )
-        self.assertTrue(config.validate())
+    def test_health_check_retries_default(self):
+        ctx = self._build(gunicorn_conf={})
+        self.assertEqual(ctx["health_check_retries"], 3)
+
+    def test_health_check_interval_default(self):
+        ctx = self._build(gunicorn_conf={})
+        self.assertEqual(ctx["health_check_interval"], 2)
+
+    def test_health_check_retries_override(self):
+        ctx = self._build(gunicorn_conf={"health_check_retries": 5, "health_check_interval": 10})
+        self.assertEqual(ctx["health_check_retries"], 5)
+        self.assertEqual(ctx["health_check_interval"], 10)
 
 
-class TestSharedResourcesAutoDetection(unittest.TestCase):
-    """Test auto-detection of shared_resources from Django settings"""
+class TestSystemdTemplate(unittest.TestCase):
+    """Test the SYSTEMD_ZERO_DOWNTIME template string structure."""
 
-    def test_auto_detects_media_root(self):
-        """When shared_resources is None, resolves MEDIA_ROOT from Django settings"""
-        mock_settings = MagicMock()
-        mock_settings.configured = True
-        mock_settings.BASE_DIR = "/home/app/myproject"
-        mock_settings.MEDIA_ROOT = "/home/app/myproject/media"
-        mock_settings.PRIVATE_MEDIA_ROOT = None
+    def test_template_contains_health_check_conditional(self):
+        from djaploy.infra.templates import SYSTEMD_ZERO_DOWNTIME
+        self.assertIn("{% if health_check_url %}", SYSTEMD_ZERO_DOWNTIME)
+        self.assertIn("--health-check-url {{ health_check_url }}", SYSTEMD_ZERO_DOWNTIME)
 
-        with patch("djaploy.config.settings", mock_settings, create=True):
-            # Patch at the import location used in _resolve_shared_resources
-            import djaploy.config as config_module
-            original = config_module.DjaployConfig._resolve_shared_resources
-
-            def patched_resolve(self):
-                import sys
-                sys.modules["django.conf"] = MagicMock(settings=mock_settings)
-                try:
-                    return original(self)
-                finally:
-                    pass
-
-            with patch.object(config_module.DjaployConfig, '_resolve_shared_resources', patched_resolve):
-                config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-                self.assertIn("media", config.shared_resources)
-
-    def test_auto_detects_nested_media_root(self):
-        """Detects MEDIA_ROOT like public/media"""
-        mock_settings = MagicMock()
-        mock_settings.configured = True
-        mock_settings.BASE_DIR = "/home/app/bostad"
-        mock_settings.MEDIA_ROOT = "/home/app/bostad/public/media"
-        mock_settings.PRIVATE_MEDIA_ROOT = "/home/app/bostad/private_media"
-
-        import djaploy.config as config_module
-        original = config_module.DjaployConfig._resolve_shared_resources
-
-        def patched_resolve(self):
-            import sys
-            sys.modules["django.conf"] = MagicMock(settings=mock_settings)
-            try:
-                return original(self)
-            finally:
-                pass
-
-        with patch.object(config_module.DjaployConfig, '_resolve_shared_resources', patched_resolve):
-            config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-            self.assertIn("public/media", config.shared_resources)
-            self.assertIn("private_media", config.shared_resources)
-
-    def test_auto_detect_skips_external_paths(self):
-        """MEDIA_ROOT outside BASE_DIR is not included"""
-        mock_settings = MagicMock()
-        mock_settings.configured = True
-        mock_settings.BASE_DIR = "/home/app/myproject"
-        mock_settings.MEDIA_ROOT = "/mnt/storage/media"  # outside BASE_DIR
-        mock_settings.PRIVATE_MEDIA_ROOT = None
-
-        import djaploy.config as config_module
-        original = config_module.DjaployConfig._resolve_shared_resources
-
-        def patched_resolve(self):
-            import sys
-            sys.modules["django.conf"] = MagicMock(settings=mock_settings)
-            try:
-                return original(self)
-            finally:
-                pass
-
-        with patch.object(config_module.DjaployConfig, '_resolve_shared_resources', patched_resolve):
-            config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-            self.assertEqual(config.shared_resources, [])
-
-    def test_auto_detect_returns_empty_when_django_unavailable(self):
-        """Falls back to [] when Django is not configured"""
-        # Default behavior without Django configured
-        config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-        self.assertIsInstance(config.shared_resources, list)
+    def test_health_check_flag_appears_before_double_dash(self):
+        """--health-check-url must come before the '--' separator in ExecStart."""
+        from djaploy.infra.templates import SYSTEMD_ZERO_DOWNTIME
+        hc_pos = SYSTEMD_ZERO_DOWNTIME.index("--health-check-url")
+        sep_pos = SYSTEMD_ZERO_DOWNTIME.index("\n    -- \\")
+        self.assertLess(hc_pos, sep_pos)
 
 
-class TestDbDirConfig(unittest.TestCase):
-    """Test db_dir configuration"""
+try:
+    import jinja2 as _jinja2
+    _JINJA2_AVAILABLE = True
+except ImportError:
+    _JINJA2_AVAILABLE = False
 
-    def test_default_db_dir_is_none(self):
-        config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-        self.assertIsNone(config.db_dir)
 
-    def test_custom_db_dir(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            db_dir="/home/{app_user}/dbs/{project_name}",
-        )
-        self.assertEqual(config.db_dir, "/home/{app_user}/dbs/{project_name}")
+@unittest.skipUnless(_JINJA2_AVAILABLE, "jinja2 not installed")
+class TestSystemdTemplateRender(unittest.TestCase):
+    """Render SYSTEMD_ZERO_DOWNTIME with Jinja2 and assert the actual output."""
 
-    def test_resolve_db_dir(self):
-        config = DjaployConfig(
-            project_name="bostad",
-            djaploy_dir="/tmp/infra",
-            app_user="bostad",
-            db_dir="/home/{app_user}/dbs/{project_name}",
-        )
-        self.assertEqual(config.resolve_db_dir(), "/home/bostad/dbs/bostad")
+    BASE_CTX = dict(
+        project_name="myapp",
+        app_user="app",
+        app_path="/home/app/apps/myapp",
+        manage_subdir="",
+        workers=4,
+        timeout=30,
+        umask="002",
+        wsgi_module="myapp.wsgi:application",
+        health_check_retries=3,
+        health_check_interval=2,
+    )
 
-    def test_resolve_db_dir_with_override(self):
-        config = DjaployConfig(
-            project_name="bostad",
-            djaploy_dir="/tmp/infra",
-            app_user="default_user",
-            db_dir="/home/{app_user}/dbs/{project_name}",
-        )
-        self.assertEqual(
-            config.resolve_db_dir(app_user="custom"),
-            "/home/custom/dbs/bostad",
-        )
+    def _render(self, **overrides):
+        from jinja2 import Environment
+        from djaploy.infra.templates import SYSTEMD_ZERO_DOWNTIME
+        ctx = {**self.BASE_CTX, **overrides}
+        return Environment().from_string(SYSTEMD_ZERO_DOWNTIME).render(**ctx)
 
-    def test_resolve_db_dir_returns_none_when_not_set(self):
-        config = DjaployConfig(project_name="test", djaploy_dir="/tmp/infra")
-        self.assertIsNone(config.resolve_db_dir())
+    def _exec_start_lines(self, rendered):
+        """Return the ExecStart continuation block as a list of stripped lines."""
+        lines = rendered.splitlines()
+        in_exec = False
+        result = []
+        for line in lines:
+            if line.startswith("ExecStart="):
+                in_exec = True
+            if in_exec:
+                result.append(line.rstrip())
+                if not line.endswith("\\"):
+                    break
+        return result
+
+    def test_health_check_url_present_in_rendered_output(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        self.assertIn("--health-check-url http://localhost:8000/health/", rendered)
+
+    def test_health_check_url_absent_when_not_set(self):
+        rendered = self._render(health_check_url=None)
+        self.assertNotIn("--health-check-url", rendered)
+
+    def test_no_blank_lines_in_exec_start_without_health_check(self):
+        """A missing health_check_url must not leave a blank continuation line."""
+        rendered = self._render(health_check_url=None)
+        for line in self._exec_start_lines(rendered):
+            self.assertTrue(line.strip(), f"Blank line in ExecStart: {line!r}")
+
+    def test_no_blank_lines_in_exec_start_with_health_check(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        for line in self._exec_start_lines(rendered):
+            self.assertTrue(line.strip(), f"Blank line in ExecStart: {line!r}")
+
+    def test_health_check_line_comes_before_double_dash_separator(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/")
+        lines = self._exec_start_lines(rendered)
+        hc_idx = next(i for i, l in enumerate(lines) if "--health-check-url" in l)
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip() == "-- \\")
+        self.assertLess(hc_idx, sep_idx)
+
+    def test_health_check_retries_and_interval_rendered(self):
+        rendered = self._render(health_check_url="http://localhost:8000/health/",
+                                health_check_retries=5, health_check_interval=10)
+        self.assertIn("--health-check-retries 5", rendered)
+        self.assertIn("--health-check-interval 10", rendered)
+
+    def test_health_check_retries_absent_without_url(self):
+        rendered = self._render(health_check_url=None)
+        self.assertNotIn("--health-check-retries", rendered)
+        self.assertNotIn("--health-check-interval", rendered)
+
+    def test_double_dash_separator_always_present(self):
+        for url in [None, "http://localhost/health"]:
+            with self.subTest(health_check_url=url):
+                rendered = self._render(health_check_url=url)
+                lines = self._exec_start_lines(rendered)
+                self.assertTrue(
+                    any(l.strip() == "-- \\" for l in lines),
+                    "Missing '--' separator in ExecStart",
+                )
 
 
 if __name__ == "__main__":

@@ -14,9 +14,6 @@ import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .config import DjaployConfig
-
 from .utils import StringLike
 
 
@@ -37,24 +34,26 @@ class OpSecret(StringLike):
 
     @staticmethod
     def _map_secrets():
-        """Fetch all secrets from 1Password"""
+        """Fetch all registered secrets from 1Password in one call."""
         import shutil
-        
+
+        # Only fetch secrets we haven't resolved yet
+        unresolved = [k for k in OpSecret._secret_mapping if k not in OpSecret._secret_values]
+        if not unresolved:
+            return
+
         if not shutil.which("op"):
             import warnings
             warnings.warn(
                 "1Password CLI (op) is not installed. Using empty values for secrets.",
                 UserWarning
             )
-            OpSecret._secret_values = {k: "" for k in OpSecret._secret_mapping.keys()}
+            for k in unresolved:
+                OpSecret._secret_values[k] = ""
             return
-            
-        # Use a delimiter-based template instead of JSON to avoid issues
-        # with special characters (like ") in secret values breaking JSON parsing.
-        # The UUID ensures the delimiter is unique per run.
+
         delimiter = f"djaploy-delimit-{uuid.uuid4()}"
-        keys = list(OpSecret._secret_mapping.keys())
-        references = [OpSecret._secret_mapping[k] for k in keys]
+        references = [OpSecret._secret_mapping[k] for k in unresolved]
         template = delimiter.join(references)
 
         output = subprocess.run(
@@ -65,20 +64,32 @@ class OpSecret(StringLike):
                 f"{output.stderr}\nFailed to fetch secrets from 1Password"
             )
 
-        # Strip trailing newline added by op inject CLI before splitting
         values = output.stdout.rstrip("\n").split(delimiter)
-        if len(values) != len(keys):
+        if len(values) != len(unresolved):
             raise ValueError(
-                f"Expected {len(keys)} secrets but got {len(values)} values from 1Password"
+                f"Expected {len(unresolved)} secrets but got {len(values)} values from 1Password"
             )
 
-        for key, value in zip(keys, values):
-            # Replicate json.loads() behavior: convert literal \n to real newlines
+        for key, value in zip(unresolved, values):
             OpSecret._secret_values[key] = value.replace(r'\n', '\n')
 
     @staticmethod
     def _create_secret_reference(value):
         return "{{ " + "op:/" + value + " }}"
+
+    @staticmethod
+    def resolve_all():
+        """Resolve all registered secrets in a single 1Password call.
+
+        Call this after all OpSecret instances are created but before
+        any values are read.  Avoids repeated ``op inject`` calls.
+        """
+        if not OpSecret._secret_mapping:
+            return
+        # Only fetch if there are unresolved secrets
+        unresolved = set(OpSecret._secret_mapping) - set(OpSecret._secret_values)
+        if unresolved:
+            OpSecret._map_secrets()
 
     @property
     def data(self):
@@ -263,34 +274,37 @@ class DnsCertificate:
 
 class BunnyDnsCertificate(DnsCertificate):
     """Certificate using Bunny DNS for validation"""
-    
-    def issue_cert(
-        self, 
-        email: str, 
-        is_staging: bool = True, 
+
+    def __init__(
+        self,
+        *domains: str,
+        op_crt: str,
+        op_key: str,
+        bunny_api_key_secret: str,
+        skip_validity_check: bool = False,
         dns_propagate_wait_seconds: int = 10,
-        bunny_api_key_secret: str = None,
+        **kwargs,
+    ):
+        super().__init__(
+            *domains,
+            op_crt=op_crt,
+            op_key=op_key,
+            skip_validity_check=skip_validity_check,
+            **kwargs,
+        )
+        self.bunny_api_key_secret = bunny_api_key_secret
+        self.dns_propagate_wait_seconds = dns_propagate_wait_seconds
+
+    def issue_cert(
+        self,
+        email: str,
+        is_staging: bool = True,
         git_dir: str = None,
-        project_config = None
+        **kwargs,
     ):
         """Issue certificate using Bunny DNS"""
         if git_dir is None:
             git_dir = os.getcwd()
-        
-        # Get bunny API key from project config or parameter
-        if bunny_api_key_secret is None:
-            if project_config and hasattr(project_config, 'module_configs'):
-                # Try to get from module config
-                bunny_config = project_config.module_configs.get('bunny', {})
-                bunny_api_key_secret = bunny_config.get('api_key')
-
-
-            # If still None, raise an error
-            if bunny_api_key_secret is None:
-                raise ValueError(
-                    "bunny api_key is required. Either pass it as a parameter or "
-                    "configure it in project_config.module_configs['bunny']['api_key']"
-                )
             
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
@@ -299,7 +313,7 @@ class BunnyDnsCertificate(DnsCertificate):
         # Create Bunny credentials file
         bunny_creds_file = os.path.join(certbot_dir, "bunny.ini")
         with open(bunny_creds_file, "w") as file:
-            secret_data = f'dns_bunny_api_key = {OpSecret(bunny_api_key_secret)}'
+            secret_data = f'dns_bunny_api_key = {OpSecret(self.bunny_api_key_secret)}'
             file.write(secret_data)
 
         # Set correct permissions (read-only for owner)
@@ -322,7 +336,7 @@ class BunnyDnsCertificate(DnsCertificate):
             "--dns-bunny-credentials",
             bunny_creds_file,
             "--dns-bunny-propagation-seconds",
-            str(dns_propagate_wait_seconds),
+            str(self.dns_propagate_wait_seconds),
             "--email",
             email,
         ]
@@ -384,24 +398,18 @@ class SshHttpHook:
     Configuration precedence (highest to lowest):
     1. Instance-level (passed to SshHttpHook.__init__)
     2. Host-level (in HostConfig's http_hook dict)
-    3. Project-level (DjaployConfig.module_configs['http_hook'])
+    3. Instance-level overrides (passed to SshHttpHook constructor)
     4. Defaults
 
-    Example usage in project config:
-        module_configs={
-            'http_hook': {
-                'webroot_path': '/var/www/challenges',
-                'use_sudo': True,
-                'file_group': 'www-data',
-            },
-        }
+    Example usage in inventory::
 
-    Example usage in inventory:
         HostConfig(
             'my-server',
             ssh_hostname='...',
-            http_hook={
+            http_hook_conf={
                 'webroot_path': '/custom/path',
+                'use_sudo': True,
+                'file_group': 'www-data',
             },
         )
     """
@@ -411,7 +419,6 @@ class SshHttpHook:
     def __init__(
         self,
         djaploy_dir: Path = None,
-        project_config: "DjaployConfig" = None,
         # Overridable settings
         webroot_path: str = None,
         use_sudo: bool = None,
@@ -424,7 +431,6 @@ class SshHttpHook:
 
         Args:
             djaploy_dir: Path to the djaploy configuration directory (contains inventory/)
-            project_config: DjaployConfig instance for project-level settings
             webroot_path: Web server path where challenges are served from
             use_sudo: Whether to use sudo for file operations
             file_owner: Owner for challenge files (defaults to host's ssh_user)
@@ -432,7 +438,6 @@ class SshHttpHook:
             file_mode: Permission mode for challenge files
         """
         self.djaploy_dir = Path(djaploy_dir) if djaploy_dir else None
-        self.project_config = project_config
 
         # Instance-level overrides
         self._webroot_path = webroot_path
@@ -491,59 +496,71 @@ class SshHttpHook:
         if domain in self._host_cache:
             return self._host_cache[domain]
 
-        # Determine inventory directory
-        inventory_dir = None
+        # Determine inventory directories to scan
+        inventory_dirs = []
         if self.djaploy_dir:
-            inventory_dir = self.djaploy_dir / 'inventory'
-        elif self.project_config and self.project_config.djaploy_dir:
-            inventory_dir = self.project_config.djaploy_dir / 'inventory'
+            candidate = self.djaploy_dir / 'inventory'
+            if candidate.exists():
+                inventory_dirs.append(candidate)
 
-        if not inventory_dir or not inventory_dir.exists():
+        # Fall back to INSTALLED_APPS discovery
+        if not inventory_dirs:
+            try:
+                from .discovery import get_app_infra_dirs
+                for _label, infra_dir in get_app_infra_dirs():
+                    inv_dir = infra_dir / 'inventory'
+                    if inv_dir.is_dir():
+                        inventory_dirs.append(inv_dir)
+            except (ImportError, ModuleNotFoundError):
+                pass
+
+        if not inventory_dirs:
             raise ValueError(
-                f"Cannot find inventory directory. "
-                f"Provide djaploy_dir or project_config with djaploy_dir set."
+                "Cannot find inventory directory. Add an app with "
+                "infra/inventory/ to INSTALLED_APPS, or provide djaploy_dir."
             )
 
-        # Scan all inventory files
-        for inv_file in inventory_dir.glob('*.py'):
-            if inv_file.name.startswith('_'):
-                continue
+        # Scan all inventory files across all discovered directories
+        for inventory_dir in inventory_dirs:
+            for inv_file in inventory_dir.glob('*.py'):
+                if inv_file.name.startswith('_'):
+                    continue
 
-            env_name = inv_file.stem
+                env_name = inv_file.stem
 
-            try:
-                hosts = self._load_inventory(inv_file)
-            except Exception:
-                # Silently skip inventories that fail to load
-                # (they may reference certificates not relevant to this domain)
-                continue
+                try:
+                    hosts = self._load_inventory(inv_file)
+                except Exception:
+                    # Silently skip inventories that fail to load
+                    # (they may reference certificates not relevant to this domain)
+                    continue
 
-            for host_name, host_data in hosts:
-                # Check domains in host_data
-                host_domains = host_data.get('domains', [])
+                for host_name, host_data in hosts:
+                    # Check domains in host_data
+                    host_domains = host_data.get('domains', [])
 
-                for domain_cert in host_domains:
-                    # Handle both certificate objects and dicts
-                    cert_domains = []
-                    if hasattr(domain_cert, 'domains'):
-                        cert_domains = domain_cert.domains
-                    elif hasattr(domain_cert, 'identifier'):
-                        cert_domains = [domain_cert.identifier]
-                    elif isinstance(domain_cert, dict):
-                        cert_domains = domain_cert.get('domains', [])
-                        if not cert_domains and domain_cert.get('identifier'):
-                            cert_domains = [domain_cert['identifier']]
+                    for domain_cert in host_domains:
+                        # Handle both certificate objects and dicts
+                        cert_domains = []
+                        if hasattr(domain_cert, 'domains'):
+                            cert_domains = domain_cert.domains
+                        elif hasattr(domain_cert, 'identifier'):
+                            cert_domains = [domain_cert.identifier]
+                        elif isinstance(domain_cert, dict):
+                            cert_domains = domain_cert.get('domains', [])
+                            if not cert_domains and domain_cert.get('identifier'):
+                                cert_domains = [domain_cert['identifier']]
 
-                    if domain in cert_domains:
+                        if domain in cert_domains:
+                            result = (host_name, host_data, env_name)
+                            self._host_cache[domain] = result
+                            return result
+
+                    # Also check app_hostname
+                    if host_data.get('app_hostname') == domain:
                         result = (host_name, host_data, env_name)
                         self._host_cache[domain] = result
                         return result
-
-                # Also check app_hostname
-                if host_data.get('app_hostname') == domain:
-                    result = (host_name, host_data, env_name)
-                    self._host_cache[domain] = result
-                    return result
 
         raise ValueError(f"No host found for domain: {domain}")
 
@@ -558,15 +575,8 @@ class SshHttpHook:
             'file_mode': '0644',
         }
 
-        # Layer 1: Project-level config
-        if self.project_config:
-            hook_config = self.project_config.module_configs.get('http_hook', {})
-            for k, v in hook_config.items():
-                if v is not None:
-                    config[k] = v
-
-        # Layer 2: Host-level config
-        host_hook_config = host_data.get('http_hook', {})
+        # Host-level config (from http_hook_conf on HostConfig)
+        host_hook_config = host_data.get('http_hook_conf') or host_data.get('http_hook', {})
         if isinstance(host_hook_config, dict):
             for k, v in host_hook_config.items():
                 if v is not None:
@@ -728,7 +738,7 @@ class LetsEncryptCertificate(DnsCertificate):
         webroot_path: str = None,
         is_staging: bool = True,
         git_dir: str = None,
-        project_config: "DjaployConfig" = None,
+        djaploy_dir: Path = None,
         use_ssh_hook: bool = None,
     ):
         """
@@ -744,17 +754,13 @@ class LetsEncryptCertificate(DnsCertificate):
             webroot_path: Path to webroot for challenge files
             is_staging: Use Let's Encrypt staging environment
             git_dir: Directory for certbot files (defaults to cwd)
-            project_config: DjaployConfig for project-level settings
+            djaploy_dir: Path to djaploy config directory (for SSH hook auto-creation)
             use_ssh_hook: Force SSH hook mode even without http_hook set.
-                         If True and no http_hook is set, creates one from project_config.
         """
         if git_dir is None:
             git_dir = os.getcwd()
 
-        # Get webroot from project config if not provided
-        if webroot_path is None and project_config:
-            webroot_path = getattr(project_config, 'letsencrypt_webroot', '/var/www/challenges')
-        elif webroot_path is None:
+        if webroot_path is None:
             webroot_path = '/var/www/challenges'
 
         # Setup certbot directory
@@ -763,21 +769,10 @@ class LetsEncryptCertificate(DnsCertificate):
 
         # Determine if we should use SSH hook mode
         http_hook = self.http_hook
-        if use_ssh_hook and not http_hook and project_config:
-            # Auto-create SshHttpHook from project config
-            http_hook = SshHttpHook(
-                djaploy_dir=project_config.djaploy_dir,
-                project_config=project_config,
-            )
+        if use_ssh_hook and not http_hook and djaploy_dir:
+            http_hook = SshHttpHook(djaploy_dir=djaploy_dir)
 
         if http_hook:
-            # SSH hook mode - generate hook scripts
-            print(f"Issuing certificate using SSH HTTP hook")
-            print(f"  Domains: {', '.join(self.domains)}")
-
-            # Pass project_config to hook if not already set
-            if not http_hook.project_config and project_config:
-                http_hook.project_config = project_config
 
             # Generate hook scripts (use first domain for host resolution)
             primary_domain = self.domains[0]

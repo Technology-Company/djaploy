@@ -9,7 +9,8 @@ from django.core.management import BaseCommand, CommandError
 from django.conf import settings
 
 from djaploy.certificates import discover_certificates, TailscaleDnsCertificate
-from djaploy.management.utils import load_config
+from djaploy.discovery import find_config
+from djaploy.management.utils import find_git_root
 
 
 class Command(BaseCommand):
@@ -55,17 +56,19 @@ class Command(BaseCommand):
         is_staging = options["staging"]
         force_renewal = options["force"]
         
-        # Get configuration
-        config = load_config(options["config"])
         os.environ['OP_ACCOUNT'] = settings.OP_ACCOUNT
-        
+
         # Discover certificates from project
-        certificates_path = config.djaploy_dir / "certificates.py"
-        if not certificates_path.exists():
-            # Try djaploy config dir
-            djaploy_dir = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
-            if djaploy_dir:
-                certificates_path = Path(djaploy_dir) / "certificates.py"
+        config_path = find_config()
+        djaploy_dir = config_path.parent if config_path else None
+        if not djaploy_dir:
+            djaploy_dir_setting = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
+            if djaploy_dir_setting:
+                djaploy_dir = Path(djaploy_dir_setting)
+        if not djaploy_dir:
+            raise CommandError("Cannot find djaploy config directory")
+
+        certificates_path = djaploy_dir / "certificates.py"
         
         if not certificates_path.exists():
             raise CommandError(f"Certificates file not found at {certificates_path}")
@@ -100,11 +103,12 @@ class Command(BaseCommand):
                     self._handle_tailscale_cert(cert, email, is_staging)
                 else:
                     # Standard certificate issuance
+                    git_dir = str(getattr(settings, 'GIT_DIR', find_git_root(Path(settings.BASE_DIR))))
                     cert.issue_cert(
                         email=email,
                         is_staging=is_staging,
-                        git_dir=str(config.git_dir),
-                        project_config=config
+                        git_dir=git_dir,
+                        djaploy_dir=djaploy_dir,
                     )
                     
                     # Upload to 1Password

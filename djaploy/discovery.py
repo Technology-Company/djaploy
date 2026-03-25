@@ -24,10 +24,14 @@ import re
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from django.apps import apps
+try:
+    from django.apps import apps
+except ImportError:
+    apps = None  # Django not available; discovery functions will return empty
 
 # Only allow safe names: alphanumeric, hyphen, underscore
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
 
 
 def get_app_infra_dirs() -> List[Tuple[str, Path]]:
@@ -38,6 +42,8 @@ def get_app_infra_dirs() -> List[Tuple[str, Path]]:
         List of (app_label, infra_dir_path) tuples for apps that have
         an infra/ directory.
     """
+    if apps is None:
+        return []
     result = []
     for app_config in apps.get_app_configs():
         infra_dir = Path(app_config.path) / "infra"

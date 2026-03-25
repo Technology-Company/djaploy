@@ -2,14 +2,12 @@
 Verify djaploy configuration command
 """
 
-import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
 from django.core.management.base import BaseCommand
 from django.conf import settings
 
-from djaploy.management.utils import load_config, load_inventory
+from djaploy.discovery import find_config
 
 
 class Command(BaseCommand):
@@ -37,19 +35,18 @@ class Command(BaseCommand):
         
         # 1. Check Django settings
         self.check_django_settings()
-        
-        # 2. Check and load configuration
-        config = self.check_configuration()
-        
-        if config:
-            # 3. Check inventory
-            self.check_inventory(config)
-            
-            # 5. Check modules
-            self.check_modules(config)
-            
-            # 6. Check project structure
-            self.check_project_structure(config)
+
+        # 2. Check discovery
+        self.check_configuration()
+
+        # 3. Check inventory
+        self.check_inventory()
+
+        # 4. Check apps
+        self.check_modules()
+
+        # 5. Check project structure
+        self.check_project_structure()
         
         # Print summary
         self.print_summary()
@@ -59,71 +56,48 @@ class Command(BaseCommand):
             sys.exit(1)
         
     def check_django_settings(self):
-        """Check Django settings for djaploy configuration"""
+        """Check Django settings required by djaploy"""
         self.stdout.write(self.style.HTTP_INFO("1. Django Settings"))
         self.stdout.write("-" * 40)
-        
-        # Check DJAPLOY_CONFIG_DIR
-        djaploy_dir = getattr(settings, 'DJAPLOY_CONFIG_DIR', None)
-        if djaploy_dir:
-            djaploy_path = Path(djaploy_dir)
-            if djaploy_path.exists():
-                self.info.append(f"DJAPLOY_CONFIG_DIR: {djaploy_dir}")
-                self.stdout.write(self.style.SUCCESS(f"  ✓ DJAPLOY_CONFIG_DIR: {djaploy_dir}"))
-            else:
-                self.errors.append(f"DJAPLOY_CONFIG_DIR path does not exist: {djaploy_dir}")
-                self.stdout.write(self.style.ERROR(f"  ✗ DJAPLOY_CONFIG_DIR path does not exist: {djaploy_dir}"))
+
+        base_dir = getattr(settings, 'BASE_DIR', None)
+        if base_dir:
+            self.stdout.write(self.style.SUCCESS(f"  ✓ BASE_DIR: {base_dir}"))
         else:
-            self.warnings.append("DJAPLOY_CONFIG_DIR not set in settings")
-            self.stdout.write(self.style.WARNING("  ⚠ DJAPLOY_CONFIG_DIR not set in settings"))
-        
-        # Check other optional settings
-        if hasattr(settings, 'DJAPLOY_GIT_DIR'):
-            self.stdout.write(f"  • DJAPLOY_GIT_DIR: {settings.DJAPLOY_GIT_DIR}")
-            
+            self.errors.append("BASE_DIR not set in Django settings")
+            self.stdout.write(self.style.ERROR("  ✗ BASE_DIR not set"))
+
+        git_dir = getattr(settings, 'GIT_DIR', None)
+        if git_dir:
+            self.stdout.write(self.style.SUCCESS(f"  ✓ GIT_DIR: {git_dir}"))
+        else:
+            self.warnings.append("GIT_DIR not set — artifact creation and versioning will fail")
+            self.stdout.write(self.style.WARNING("  ⚠ GIT_DIR not set in settings"))
+
+        artifact_dir = getattr(settings, 'ARTIFACT_DIR', 'deployment')
+        self.stdout.write(f"  • ARTIFACT_DIR: {artifact_dir}")
+
         self.stdout.write("")
         
     def check_configuration(self):
-        """Check and load djaploy configuration"""
-        self.stdout.write(self.style.HTTP_INFO("2. Configuration File"))
+        """Check djaploy discovery and settings"""
+        self.stdout.write(self.style.HTTP_INFO("2. Discovery"))
         self.stdout.write("-" * 40)
-        
+
         try:
-            config = load_config()
-            
-            if config:
-                # Validate configuration
-                try:
-                    config.validate()
-                    self.stdout.write(self.style.SUCCESS("  ✓ Configuration loaded and validated"))
-                    
-                    # Show configuration details
-                    self.stdout.write(f"  • Project: {config.project_name}")
-                    self.stdout.write(f"  • Python Version: {config.python_version}")
-                    self.stdout.write(f"  • App User: {config.app_user}")
-                    
-                    if config.manage_py_path:
-                        self.stdout.write(f"  • Manage.py Path: {config.manage_py_path}")
-                    
-                    if config.ssl_enabled:
-                        self.stdout.write(self.style.SUCCESS("  • SSL: Enabled"))
-                        if config.ssl_cert_path:
-                            self.stdout.write(f"    - Cert: {config.ssl_cert_path}")
-                        if config.ssl_key_path:
-                            self.stdout.write(f"    - Key: {config.ssl_key_path}")
-                    
-                    if self.verbose and config.module_configs:
-                        self.stdout.write(f"  • App configs: {', '.join(config.module_configs.keys())}")
-                    
-                except Exception as e:
-                    self.errors.append(f"Configuration validation failed: {e}")
-                    self.stdout.write(self.style.ERROR(f"  ✗ Configuration validation failed: {e}"))
-                    return None
-                    
+            config_path = find_config()
+            if config_path:
+                self.stdout.write(self.style.SUCCESS(f"  ✓ Config found: {config_path}"))
             else:
-                self.errors.append("No configuration found")
-                self.stdout.write(self.style.ERROR("  ✗ No configuration found"))
-                self.stdout.write(self.style.WARNING("    Create a config.py file in your DJAPLOY_CONFIG_DIR"))
+                self.warnings.append("No config.py found via discovery")
+                self.stdout.write(self.style.WARNING("  ⚠ No config.py found in INSTALLED_APPS infra/ directories"))
+
+            git_dir = getattr(settings, 'GIT_DIR', None)
+            if git_dir:
+                self.stdout.write(self.style.SUCCESS(f"  ✓ GIT_DIR: {git_dir}"))
+            else:
+                self.warnings.append("GIT_DIR not set in Django settings")
+                self.stdout.write(self.style.WARNING("  ⚠ GIT_DIR not set in Django settings"))
                 return None
                 
         except Exception as e:
@@ -132,93 +106,58 @@ class Command(BaseCommand):
             return None
             
         self.stdout.write("")
-        return config
-        
-    def check_inventory(self, config):
-        """Check inventory configuration"""
+
+    def check_inventory(self):
+        """Check inventory via discovery"""
         self.stdout.write(self.style.HTTP_INFO("3. Inventory"))
         self.stdout.write("-" * 40)
-        
-        inventory_dir = config.get_inventory_dir()
-        
-        if not inventory_dir.exists():
-            self.warnings.append(f"Inventory directory does not exist: {inventory_dir}")
-            self.stdout.write(self.style.WARNING(f"  ⚠ Inventory directory does not exist: {inventory_dir}"))
-            self.stdout.write(f"    Create it with: mkdir -p {inventory_dir}")
-            self.stdout.write("")
-            return
-            
-        # Check for inventory files
-        inventory_files = list(inventory_dir.glob("*.py"))
-        if not inventory_files:
+
+        from djaploy.discovery import get_app_infra_dirs
+        from djaploy.deploy import _load_inventory_hosts
+
+        # Find all inventory dirs
+        inventory_files = []
+        for app_label, infra_dir in get_app_infra_dirs():
+            inv_dir = infra_dir / "inventory"
+            if inv_dir.is_dir():
+                inventory_files.extend(inv_dir.glob("*.py"))
+
+        inv_files = [f for f in inventory_files if not f.name.startswith("_")]
+        if not inv_files:
             self.warnings.append("No inventory files found")
             self.stdout.write(self.style.WARNING("  ⚠ No inventory files found"))
-            self.stdout.write("    Create inventory files (e.g., production.py, staging.py)")
             self.stdout.write("")
             return
-            
-        self.stdout.write(self.style.SUCCESS(f"  ✓ Found {len(inventory_files)} inventory file(s)"))
-        
-        # Try to load each inventory
-        for inv_file in inventory_files:
+
+        self.stdout.write(self.style.SUCCESS(f"  ✓ Found {len(inv_files)} inventory file(s)"))
+
+        for inv_file in inv_files:
             env_name = inv_file.stem
             self.stdout.write(f"\n  Environment: {self.style.HTTP_INFO(env_name)}")
-            
+
             try:
-                hosts = load_inventory(str(inventory_dir), env_name)
+                hosts = _load_inventory_hosts(str(inv_file))
                 if hosts:
                     self.stdout.write(self.style.SUCCESS(f"    ✓ Loaded {len(hosts)} host(s)"))
                     for host in hosts:
-                        # HostConfig is a tuple (name, config_dict)
                         if isinstance(host, tuple) and len(host) == 2:
                             host_name, host_config = host
-                            ssh_hostname = host_config.get('ssh_hostname', 'unknown')
-                            self.stdout.write(f"      • {host_name} ({ssh_hostname})")
-                            
-                            services = host_config.get('services')
-                            if services:
-                                self.stdout.write(f"        Services: {', '.join(services)}")
-                            
-                            domains = host_config.get('domains')
-                            if domains:
-                                self.stdout.write(f"        Domains: {len(domains)} configured")
-                                if self.verbose:
-                                    self.stdout.write(f"        DEBUG: domains type = {type(domains)}")
-                                    for i, domain in enumerate(domains):
-                                        self.stdout.write(f"        DEBUG: domain[{i}] type = {type(domain)}")
-                                        if hasattr(domain, '__dict__'):
-                                            self.stdout.write(f"        DEBUG: domain[{i}] = {domain.__dict__}")
-                                        else:
-                                            self.stdout.write(f"        DEBUG: domain[{i}] = {domain}")
-                            
-                            app_hostname = host_config.get('app_hostname')
-                            if app_hostname:
-                                self.stdout.write(f"        App Hostname: {app_hostname}")
-                                if self.verbose:
-                                    self.stdout.write(f"        DEBUG: app_hostname type = {type(app_hostname)}")
-                                
-                            backup = host_config.get('backup')
-                            if backup:
-                                backup_type = backup.type if hasattr(backup, 'type') else 'configured'
-                                self.stdout.write(f"        Backup: {backup_type} enabled")
-                        else:
-                            self.stdout.write(f"      • {host} (unknown format)")
+                            ssh_hostname = host_config.get('ssh_hostname', 'unknown') if isinstance(host_config, dict) else getattr(host_config, 'ssh_hostname', 'unknown')
+                            self.stdout.write(f"      {host_name} ({ssh_hostname})")
                 else:
                     self.warnings.append(f"No hosts found in {env_name} inventory")
                     self.stdout.write(self.style.WARNING(f"    ⚠ No hosts defined"))
-                    
             except Exception as e:
                 self.errors.append(f"Failed to load {env_name} inventory: {e}")
                 self.stdout.write(self.style.ERROR(f"    ✗ Failed to load: {e}"))
-                
+
         self.stdout.write("")
-        
-    def check_modules(self, config):
+
+    def check_modules(self):
         """Check discovered djaploy apps"""
         self.stdout.write(self.style.HTTP_INFO("4. Apps"))
         self.stdout.write("-" * 40)
 
-        from pathlib import Path
         apps_dir = Path(__file__).resolve().parent.parent.parent / "apps"
         if apps_dir.is_dir():
             apps = sorted(
@@ -229,54 +168,32 @@ class Command(BaseCommand):
             self.stdout.write(f"  Discovered apps ({len(apps)}):")
             for app_name in apps:
                 self.stdout.write(self.style.SUCCESS(f"    ✓ {app_name}"))
-                app_config = config.get_module_config(app_name)
-                if app_config and self.verbose:
-                    self.stdout.write(f"      Config: {app_config}")
         else:
             self.warnings.append("No apps directory found")
             self.stdout.write(self.style.WARNING("  ⚠ No apps directory found"))
 
         self.stdout.write("")
-        
-    def check_project_structure(self, config):
+
+    def check_project_structure(self):
         """Check project structure and paths"""
         self.stdout.write(self.style.HTTP_INFO("5. Project Structure"))
         self.stdout.write("-" * 40)
-        
-        # Check project directory
-        if config.project_dir:
-            if config.project_dir.exists():
-                self.stdout.write(self.style.SUCCESS(f"  ✓ Project directory: {config.project_dir}"))
-            else:
-                self.errors.append(f"Project directory does not exist: {config.project_dir}")
-                self.stdout.write(self.style.ERROR(f"  ✗ Project directory does not exist: {config.project_dir}"))
-        else:
-            self.stdout.write("  • Project directory: Using current directory")
-            
-        # Check git directory
-        if config.git_dir:
-            if config.git_dir.exists():
-                self.stdout.write(self.style.SUCCESS(f"  ✓ Git directory: {config.git_dir}"))
-                # Check if it's actually a git repo
-                git_folder = config.git_dir / '.git'
-                if not git_folder.exists():
-                    self.warnings.append(f"Git directory exists but .git folder not found: {config.git_dir}")
+
+        base_dir = Path(settings.BASE_DIR)
+        self.stdout.write(self.style.SUCCESS(f"  ✓ BASE_DIR: {base_dir}"))
+
+        git_dir = getattr(settings, 'GIT_DIR', None)
+        if git_dir:
+            git_path = Path(git_dir)
+            if git_path.exists():
+                self.stdout.write(self.style.SUCCESS(f"  ✓ GIT_DIR: {git_dir}"))
+                if not (git_path / '.git').exists():
+                    self.warnings.append(f"GIT_DIR exists but .git folder not found: {git_dir}")
                     self.stdout.write(self.style.WARNING("    ⚠ .git folder not found"))
             else:
-                self.errors.append(f"Git directory does not exist: {config.git_dir}")
-                self.stdout.write(self.style.ERROR(f"  ✗ Git directory does not exist: {config.git_dir}"))
-                
-        # Check manage.py path
-        if config.manage_py_path:
-            # Check relative to git root (where poetry run python would be executed)
-            git_root = config.git_dir or Path.cwd()
-            manage_py_full = git_root / config.manage_py_path
-            if manage_py_full.exists():
-                self.stdout.write(self.style.SUCCESS(f"  ✓ manage.py found: {config.manage_py_path}"))
-            else:
-                self.warnings.append(f"manage.py not found at: {manage_py_full}")
-                self.stdout.write(self.style.WARNING(f"  ⚠ manage.py not found at: {manage_py_full}"))
-                
+                self.errors.append(f"GIT_DIR does not exist: {git_dir}")
+                self.stdout.write(self.style.ERROR(f"  ✗ GIT_DIR does not exist: {git_dir}"))
+
         self.stdout.write("")
         
     def print_summary(self):

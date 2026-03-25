@@ -30,10 +30,8 @@ from django.core.management import BaseCommand, CommandError
 from djaploy.discovery import (
     find_command,
     find_inventory,
-    find_config,
     get_available_commands,
 )
-from djaploy.management.utils import load_config
 
 
 # Built-in command files shipped with djaploy
@@ -79,13 +77,6 @@ class Command(BaseCommand):
             action="store_true",
             dest="list_commands",
             help="List all available commands",
-        )
-
-        parser.add_argument(
-            "--config",
-            type=str,
-            default=None,
-            help="Path to djaploy configuration file (overrides discovery)",
         )
 
         parser.add_argument(
@@ -179,12 +170,8 @@ class Command(BaseCommand):
                 f"Unknown command: '{command_name}'. No commands found."
             )
 
-        # Load config
-        config = self._load_config(options)
-        config.validate()
-
         # Resolve inventory
-        inventory_file = self._resolve_inventory(env, config, options)
+        inventory_file = self._resolve_inventory(env, options)
 
         # Determine mode
         if options["local"]:
@@ -204,9 +191,10 @@ class Command(BaseCommand):
             version_bump = "patch"
 
         # Build the context — every hook and command sees the same data
+        from djaploy.deploy import _build_pyinfra_data
+
         context = {
             "command": command_name,
-            "config": config,
             "env": env,
             "mode": mode,
             "release": options.get("release"),
@@ -214,12 +202,7 @@ class Command(BaseCommand):
             "skip_prepare": options["skip_prepare"],
             "inventory_file": str(inventory_file),
             "command_file": str(command_file),
-            # pyinfra_data is what gets passed via --data flags.
-            # Hooks can add keys to this dict during precommand phase.
-            "pyinfra_data": {
-                "env": env,
-                "djaploy_dir": str(config.djaploy_dir),
-            },
+            "pyinfra_data": _build_pyinfra_data(env),
         }
 
         # Pass release through to pyinfra for commands that need it
@@ -256,19 +239,7 @@ class Command(BaseCommand):
 
     # ── Helpers ──────────────────────────────────────────────────────
 
-    def _load_config(self, options):
-        config_path = options["config"]
-        if not config_path:
-            discovered = find_config()
-            if discovered:
-                config_path = str(discovered)
-
-        try:
-            return load_config(config_path)
-        except Exception as e:
-            raise CommandError(f"Failed to load djaploy config: {e}") from e
-
-    def _resolve_inventory(self, env, config, options):
+    def _resolve_inventory(self, env, options):
         if options["inventory"]:
             inventory_file = Path(options["inventory"])
             if not inventory_file.is_absolute():
@@ -279,13 +250,6 @@ class Command(BaseCommand):
                 inventory_file = Path.cwd() / inventory_file
         else:
             inventory_file = find_inventory(env)
-            if not inventory_file:
-                try:
-                    fallback = config.get_inventory_dir() / f"{env}.py"
-                    if fallback.exists():
-                        inventory_file = fallback
-                except Exception:
-                    pass
 
         if not inventory_file or not inventory_file.exists():
             raise CommandError(

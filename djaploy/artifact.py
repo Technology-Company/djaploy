@@ -1,5 +1,8 @@
 """
-Artifact creation for deployments
+Artifact creation for deployments.
+
+Builds a tar.gz from the project source and returns a temp path.
+The caller is responsible for copying/renaming per app_name.
 """
 
 import gzip
@@ -10,51 +13,71 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from .config import DjaployConfig
+from django.conf import settings
 
 
-def create_artifact(config: DjaployConfig, 
-                   mode: str = "latest",
-                   release_tag: Optional[str] = None) -> Path:
-    """
-    Create deployment artifact based on mode
-    
-    Args:
-        config: DjaployConfig instance
-        mode: Deployment mode ("local", "latest", "release")
-        release_tag: Release tag if mode is "release"
-        
-    Returns:
-        Path to created artifact
-    """
-    
-    # Ensure artifact directory exists
-    artifact_dir = config.git_dir / config.artifact_dir
+def _get_git_dir() -> Path:
+    return Path(settings.GIT_DIR)
+
+
+def _get_artifact_dir() -> Path:
+    git_dir = _get_git_dir()
+    artifact_dir_name = getattr(settings, 'ARTIFACT_DIR', 'deployment')
+    artifact_dir = git_dir / artifact_dir_name
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    
+    return artifact_dir
+
+
+def create_artifact(mode: str = "latest",
+                    release_tag: Optional[str] = None,
+                    artifact_conf: Optional[dict] = None) -> Path:
+    """Create a deployment artifact.
+
+    Returns a path to a temp-named tar.gz in the artifact directory.
+    The caller copies it to ``{app_name}.{ref}.tar.gz`` per host.
+    """
+    artifact_dir = _get_artifact_dir()
+    extra_files = (artifact_conf or {}).get("extra_files", [])
+
     if mode == "local":
-        return _create_local_artifact(config, artifact_dir)
+        return _create_local_artifact(artifact_dir, extra_files)
     elif mode == "latest":
-        return _create_latest_artifact(config, artifact_dir)
+        return _create_latest_artifact(artifact_dir, extra_files)
     elif mode == "release":
         if not release_tag:
             raise ValueError("release_tag is required when mode is 'release'")
-        return _create_release_artifact(config, artifact_dir, release_tag)
+        return _create_release_artifact(artifact_dir, release_tag, extra_files)
     else:
         raise ValueError(f"Invalid deployment mode: {mode}")
 
 
-def _create_local_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
-    """Create artifact from local uncommitted files"""
-    
-    artifact_file = artifact_dir / f"{config.project_name}.local.tar.gz"
-    
-    # Change to git directory
+def copy_artifact_for_host(artifact_path: Path, app_name: str) -> Path:
+    """Copy an artifact with the host's app_name in the filename.
+
+    Given ``deployment/_build.abc123.tar.gz`` returns
+    ``deployment/myapp.abc123.tar.gz``.
+    """
+    # Extract the ref from the temp filename: _build.{ref}.tar.gz -> {ref}
+    stem = artifact_path.name
+    if stem.startswith("_build."):
+        ref_part = stem[len("_build."):]  # "abc123.tar.gz"
+    else:
+        ref_part = stem
+
+    dest = artifact_path.parent / f"{app_name}.{ref_part}"
+    shutil.copy2(str(artifact_path), str(dest))
+    return dest
+
+
+def _create_local_artifact(artifact_dir: Path, extra_files: list = None) -> Path:
+    """Create artifact from local uncommitted files."""
+    git_dir = _get_git_dir()
+    artifact_file = artifact_dir / "_build.local.tar.gz"
+
     original_dir = os.getcwd()
-    os.chdir(config.git_dir)
-    
+    os.chdir(git_dir)
+
     try:
-        # Get list of git-tracked and untracked (non-ignored) files
         result = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard", "--cached"],
             capture_output=True,
@@ -63,14 +86,10 @@ def _create_local_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
         )
         file_list = [f for f in result.stdout.splitlines() if f.strip()]
 
-        # Include extra files (e.g. gitignored build artifacts like Tailwind CSS)
-        artifact_config = config.module_configs.get('artifact', {})
-        extra_files = artifact_config.get('extra_files', [])
-        for extra_file in extra_files:
+        for extra_file in (extra_files or []):
             if os.path.exists(extra_file) and extra_file not in file_list:
                 file_list.append(extra_file)
 
-        # Create tar.gz archive using Python's tarfile module
         import tarfile
         with tarfile.open(str(artifact_file), "w:gz") as tar:
             for f in file_list:
@@ -82,70 +101,61 @@ def _create_local_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
         os.chdir(original_dir)
 
 
-def _create_latest_artifact(config: DjaployConfig, artifact_dir: Path) -> Path:
-    """Create artifact from latest git commit"""
-    
-    # Get git hash
+def _create_latest_artifact(artifact_dir: Path, extra_files: list = None) -> Path:
+    """Create artifact from latest git commit."""
+    git_dir = _get_git_dir()
     git_hash = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
         capture_output=True,
         check=True,
         text=True,
-        cwd=config.git_dir,
+        cwd=git_dir,
     ).stdout.strip()
-    
-    return _create_git_artifact(config, artifact_dir, git_hash)
+
+    return _create_git_artifact(artifact_dir, git_hash, extra_files)
 
 
-def _create_release_artifact(config: DjaployConfig, artifact_dir: Path, release_tag: str) -> Path:
-    """Create artifact from a specific release tag"""
-    
-    # Verify the tag exists
+def _create_release_artifact(artifact_dir: Path, release_tag: str, extra_files: list = None) -> Path:
+    """Create artifact from a specific release tag."""
+    git_dir = _get_git_dir()
     try:
         subprocess.run(
             ["git", "rev-parse", release_tag],
             capture_output=True,
             check=True,
-            cwd=config.git_dir,
+            cwd=git_dir,
         )
     except subprocess.CalledProcessError:
         raise ValueError(f"Release tag '{release_tag}' does not exist")
-    
-    return _create_git_artifact(config, artifact_dir, release_tag)
+
+    return _create_git_artifact(artifact_dir, release_tag, extra_files)
 
 
-def _create_git_artifact(config: DjaployConfig, artifact_dir: Path, git_ref: str) -> Path:
-    """Create artifact from a git reference"""
+def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = None) -> Path:
+    """Create artifact from a git reference."""
+    git_dir = _get_git_dir()
+    artifact_tar = artifact_dir / f"_build.{git_ref}.tar"
+    artifact_file = artifact_dir / f"_build.{git_ref}.tar.gz"
 
-    artifact_tar = artifact_dir / f"{config.project_name}.{git_ref}.tar"
-    artifact_file = artifact_dir / f"{config.project_name}.{git_ref}.tar.gz"
-
-    # Change to git directory
     original_dir = os.getcwd()
-    os.chdir(config.git_dir)
+    os.chdir(git_dir)
 
     try:
-        # Build git archive command
         cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), git_ref]
 
-        # Check if there are extra files to add from config
-        artifact_config = config.module_configs.get('artifact', {})
-        extra_files = artifact_config.get('extra_files', [])
-
-        # Add extra files to git index temporarily if they exist
+        extra_files = extra_files or []
         files_to_unstage = []
         if extra_files:
             print(f"[ARTIFACT] Adding {len(extra_files)} extra file(s) to archive")
 
         for extra_file in extra_files:
-            extra_file_path = config.git_dir / extra_file
+            extra_file_path = git_dir / extra_file
             if extra_file_path.exists():
                 subprocess.run(["git", "add", "-f", extra_file], check=True)
                 files_to_unstage.append(extra_file)
             else:
                 print(f"[ARTIFACT] WARNING: File not found: {extra_file}")
 
-        # If we added files to the index, use git write-tree to create archive
         if files_to_unstage:
             tree_hash = subprocess.run(
                 ["git", "write-tree"],
@@ -154,21 +164,15 @@ def _create_git_artifact(config: DjaployConfig, artifact_dir: Path, git_ref: str
                 text=True
             ).stdout.strip()
 
-            # Use the tree object instead of git_ref
             cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), tree_hash]
-
-            # Create tar archive from git tree
             subprocess.run(cmd, check=True)
 
-            # Unstage the files we temporarily added
             for extra_file in files_to_unstage:
                 subprocess.run(["git", "reset", "HEAD", extra_file], check=True,
-                             capture_output=True)  # Suppress output
+                             capture_output=True)
         else:
-            # No extra files, use original approach
             subprocess.run(cmd, check=True)
 
-        # Compress the tar file using Python's gzip module (cross-platform)
         with open(str(artifact_tar), 'rb') as f_in:
             with gzip.open(str(artifact_file), 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)

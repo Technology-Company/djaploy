@@ -2,8 +2,10 @@
 djaploy - Modular Django deployment system based on pyinfra
 """
 
-from .config import DjaployConfig
-from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project, run_command
+default_app_config = "djaploy.app.DjaployConfig"
+
+from .config import HostConfig, BackupConfig, BorgBackupConfig
+from .deploy import deploy_project, configure_server, restore_from_backup, rollback_project, create_janitor_user, run_command
 from .version import __version__
 
 # Versioning utilities
@@ -44,11 +46,14 @@ from .hooks import (
 
 __all__ = [
     # Core
-    "DjaployConfig",
+    "HostConfig",
+    "BackupConfig",
+    "BorgBackupConfig",
     "deploy_project",
     "configure_server",
     "rollback_project",
     "restore_from_backup",
+    "create_janitor_user",
     "run_command",
     "__version__",
     # Versioning

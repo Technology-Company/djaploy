@@ -47,7 +47,7 @@ class TestHookRegistry(unittest.TestCase):
         from djaploy.hooks import RemoteFunctionHook
 
         @self.registry.deploy_hook("deploy")
-        def my_remote(host_data, project_config, artifact_path):
+        def my_remote(host_data, artifact_path):
             pass
 
         # Should NOT appear in local hooks
@@ -68,7 +68,7 @@ class TestHookRegistry(unittest.TestCase):
             pass
 
         @self.registry.deploy_hook("deploy")
-        def my_remote(host_data, project_config, artifact_path):
+        def my_remote(host_data, artifact_path):
             pass
 
         self.registry.clear()
@@ -81,7 +81,7 @@ class TestHookRegistry(unittest.TestCase):
             pass
 
         @self.registry.deploy_hook("configure")
-        def h2(host_data, project_config):
+        def h2(host_data):
             pass
 
         names = self.registry.get_hook_names()
@@ -100,6 +100,127 @@ class TestHookRegistry(unittest.TestCase):
         ctx = {}
         self.registry.call("deploy:prerequisites", ctx)
         self.assertEqual(ctx["result"], 42)
+
+
+class TestHookOverride(unittest.TestCase):
+    """Test hook override behavior: first registration wins, override controls warnings."""
+
+    def setUp(self):
+        self.registry = HookRegistry()
+
+    def test_first_registration_wins_for_local_hooks(self):
+        """A registers hook_a, B registers hook_a — A's runs, B's is ignored."""
+        calls = []
+
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            calls.append("A")
+
+        @self.registry.hook("configure")
+        def my_hook(ctx):  # noqa: F811 — same name on purpose
+            calls.append("B")
+
+        self.registry.call("configure", {})
+        self.assertEqual(calls, ["A"])
+
+    def test_first_registration_wins_for_remote_hooks(self):
+        """A registers deploy_nginx, B registers deploy_nginx — A's is returned."""
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data, artifact_path):
+            return "A"
+
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data, artifact_path):  # noqa: F811
+            return "B"
+
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0].function(None, None), "A")
+
+    def test_duplicate_without_override_logs_warning(self):
+        """Duplicate without override=True should log a warning."""
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            pass
+
+        with self.assertLogs("djaploy.hooks", level="WARNING") as cm:
+            @self.registry.hook("configure")
+            def my_hook(ctx):  # noqa: F811
+                pass
+
+        self.assertTrue(any("already registered" in msg for msg in cm.output))
+
+    def test_duplicate_with_override_on_duplicate_suppresses_warning(self):
+        """Duplicate with override=True on the duplicate should suppress warning."""
+        @self.registry.hook("configure")
+        def my_hook(ctx):
+            pass
+
+        import logging
+        logger = logging.getLogger("djaploy.hooks")
+        with patch.object(logger, "warning") as mock_warn:
+            @self.registry.hook("configure", override=True)
+            def my_hook(ctx):  # noqa: F811
+                pass
+
+        mock_warn.assert_not_called()
+
+    def test_override_on_first_suppresses_warning_for_later_duplicates(self):
+        """override=True on the FIRST registration suppresses warnings for all later duplicates."""
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):
+            return "winner"
+
+        # Later duplicate WITHOUT override — should NOT warn because the winner has override
+        import logging
+        logger = logging.getLogger("djaploy.hooks")
+        with patch.object(logger, "warning") as mock_warn:
+            @self.registry.deploy_hook("deploy:configure")
+            def deploy_nginx(host_data):  # noqa: F811
+                return "loser"
+
+        mock_warn.assert_not_called()
+
+        # Winner still runs
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0].function(None), "winner")
+
+    def test_a_no_override_b_override_c_override(self):
+        """A(no override), B(override), C(override) — A always wins, no warnings from B and C."""
+        calls = []
+
+        @self.registry.deploy_hook("deploy:configure")
+        def deploy_nginx(host_data):
+            calls.append("A")
+
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):  # noqa: F811
+            calls.append("B")
+
+        @self.registry.deploy_hook("deploy:configure", override=True)
+        def deploy_nginx(host_data):  # noqa: F811
+            calls.append("C")
+
+        hooks = self.registry.get_remote_hooks("deploy:configure")
+        self.assertEqual(len(hooks), 1)
+        hooks[0].function(None)
+        self.assertEqual(calls, ["A"])
+
+    def test_different_names_are_independent(self):
+        """Hooks with different function names coexist regardless of override."""
+        calls = []
+
+        @self.registry.hook("configure")
+        def hook_a(ctx):
+            calls.append("A")
+
+        @self.registry.hook("configure")
+        def hook_b(ctx):
+            calls.append("B")
+
+        self.registry.call("configure", {})
+        self.assertEqual(calls, ["A", "B"])
 
 
 class TestDiscovery(unittest.TestCase):
@@ -213,19 +334,20 @@ class TestBuiltinHooks(unittest.TestCase):
             _registry._hooks = old_hooks
 
     @patch("djaploy.deploy._send_notification")
-    def test_notification_hook_calls_send_notification(self, mock_send):
+    @patch("djaploy.deploy._load_inventory_hosts", return_value=[])
+    def test_notification_hook_calls_send_notification(self, _mock_hosts, mock_send):
         from djaploy.builtin_hooks import _send_notification_hook
 
         ctx = {
-            "config": MagicMock(),
             "env": "production",
+            "inventory_file": "/tmp/inv.py",
             "release_info": {"new_version": "v1.0.0"},
             "success": True,
             "error": None,
         }
         _send_notification_hook(ctx)
         mock_send.assert_called_once_with(
-            ctx["config"], "production", ctx["release_info"],
+            "production", [], ctx["release_info"],
             success=True, error_message=""
         )
 
@@ -234,38 +356,62 @@ class TestBuiltinHooks(unittest.TestCase):
         from djaploy.builtin_hooks import _create_version_tag_hook
 
         ctx = {
-            "config": MagicMock(),
             "env": "production",
             "release_info": {"new_version": "v1.0.0"},
             "success": True,
         }
         _create_version_tag_hook(ctx)
         mock_tag.assert_called_once_with(
-            ctx["config"], "production", ctx["release_info"]
+            "production", ctx["release_info"]
         )
 
     @patch("djaploy.deploy._create_version_tag")
     def test_version_tag_hook_skips_on_failure(self, mock_tag):
         from djaploy.builtin_hooks import _create_version_tag_hook
 
-        ctx = {"config": MagicMock(), "env": "prod", "release_info": {}, "success": False}
+        ctx = {"env": "prod", "release_info": {}, "success": False}
         _create_version_tag_hook(ctx)
         mock_tag.assert_not_called()
 
 
 class TestDjaployAppDiscovery(unittest.TestCase):
-    """Test that djaploy built-in apps are discovered."""
+    """Test that djaploy built-in apps are discovered via INSTALLED_APPS."""
 
-    def test_load_djaploy_apps_finds_core_nginx_and_systemd(self):
-        from djaploy.hooks import _registry
+    def test_djaploy_apps_discovered_via_installed_apps(self):
+        """Built-in apps are discovered when added to INSTALLED_APPS."""
+        import djaploy.discovery
+        from djaploy.hooks import HookRegistry
+        from pathlib import Path
 
-        # Save and clear remote hooks, then discover apps
-        saved = dict(_registry._remote_hooks)
-        _registry._remote_hooks.clear()
+        registry = HookRegistry()
+
+        # Simulate Django seeing the built-in apps in INSTALLED_APPS
+        djaploy_dir = Path(__file__).resolve().parent.parent / "djaploy"
+        apps_dir = djaploy_dir / "apps"
+        mock_apps = []
+
+        # "djaploy" itself provides core hooks (infra/ lives in djaploy/)
+        mock_djaploy = MagicMock()
+        mock_djaploy.label = "djaploy"
+        mock_djaploy.path = str(djaploy_dir)
+        mock_apps.append(mock_djaploy)
+
+        # nginx and systemd are separate apps under djaploy/apps/
+        for app_name in ("nginx", "systemd"):
+            mock_app = MagicMock()
+            mock_app.label = f"djaploy_{app_name}"
+            mock_app.path = str(apps_dir / app_name)
+            mock_apps.append(mock_app)
+
+        with patch("djaploy.hooks.HookRegistry._load_builtin_hooks"):
+            with patch("djaploy.discovery.apps") as mock_django_apps:
+                mock_django_apps.get_app_configs.return_value = mock_apps
+                registry.discover()
+
+        from djaploy.hooks import _registry as global_registry
+        saved_remote = dict(global_registry._remote_hooks)
         try:
-            _registry._load_djaploy_apps()
-
-            hook_names = _registry.get_hook_names()
+            hook_names = global_registry.get_hook_names()
             self.assertIn("configure", hook_names)
             self.assertIn("deploy:upload", hook_names)
             self.assertIn("deploy:configure", hook_names)
@@ -273,41 +419,59 @@ class TestDjaployAppDiscovery(unittest.TestCase):
             self.assertIn("deploy:start", hook_names)
             self.assertIn("rollback", hook_names)
 
-            # configure — server setup
-            configure_hooks = _registry.get_remote_hooks("configure")
+            # configure — server setup (from core)
+            configure_hooks = global_registry.get_remote_hooks("configure")
             configure_names = [h.function.__name__ for h in configure_hooks]
             self.assertIn("configure_server", configure_names)
 
-            # deploy:upload — upload and extract artifact
-            upload_hooks = _registry.get_remote_hooks("deploy:upload")
+            # deploy:upload — upload and extract artifact (from core)
+            upload_hooks = global_registry.get_remote_hooks("deploy:upload")
             upload_names = [h.function.__name__ for h in upload_hooks]
             self.assertIn("upload_artifact", upload_names)
 
             # deploy:configure — deps, configs, SSL, daemon-reload
-            config_hooks = _registry.get_remote_hooks("deploy:configure")
+            config_hooks = global_registry.get_remote_hooks("deploy:configure")
             config_names = [h.function.__name__ for h in config_hooks]
             self.assertIn("configure_application", config_names)
             self.assertIn("deploy_nginx", config_names)
             self.assertIn("reload_systemd_daemon", config_names)
 
             # deploy:pre — migrations, collectstatic, symlink swap
-            pre_hooks = _registry.get_remote_hooks("deploy:pre")
+            pre_hooks = global_registry.get_remote_hooks("deploy:pre")
             pre_names = [h.function.__name__ for h in pre_hooks]
             self.assertIn("activate_release", pre_names)
 
             # deploy:start — reload/restart services
-            start_hooks = _registry.get_remote_hooks("deploy:start")
+            start_hooks = global_registry.get_remote_hooks("deploy:start")
             start_names = [h.function.__name__ for h in start_hooks]
             self.assertIn("reload_nginx", start_names)
             self.assertIn("start_services", start_names)
 
             # Verify rollback hook
-            rollback_hooks = _registry.get_remote_hooks("rollback")
+            rollback_hooks = global_registry.get_remote_hooks("rollback")
             rollback_names = [h.function.__name__ for h in rollback_hooks]
             self.assertIn("rollback_release", rollback_names)
         finally:
-            _registry._remote_hooks.clear()
-            _registry._remote_hooks.update(saved)
+            global_registry._remote_hooks.clear()
+            global_registry._remote_hooks.update(saved_remote)
+
+    def test_apps_not_discovered_when_not_in_installed_apps(self):
+        """Built-in apps are NOT loaded when absent from INSTALLED_APPS."""
+        from djaploy.hooks import HookRegistry
+
+        registry = HookRegistry()
+
+        with patch("djaploy.hooks.HookRegistry._load_builtin_hooks"):
+            with patch("djaploy.discovery.apps") as mock_django_apps:
+                mock_django_apps.get_app_configs.return_value = []
+                registry.discover()
+
+        from djaploy.hooks import _registry as global_registry
+        # No remote hooks should be registered from djaploy apps
+        configure_hooks = global_registry.get_remote_hooks("configure")
+        djaploy_fns = [h.function.__name__ for h in configure_hooks
+                       if h.function.__name__ == "configure_server"]
+        self.assertEqual(djaploy_fns, [])
 
 
 if __name__ == "__main__":

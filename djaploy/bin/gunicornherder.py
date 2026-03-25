@@ -33,18 +33,26 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
+import urllib.request
 
 log = logging.getLogger("gunicornherder")
 
 
 class GunicornHerder:
-    def __init__(self, pidfile, cmd, app_dir=None, overlap=5, timeout=30):
+    def __init__(self, pidfile, cmd, app_dir=None, overlap=5, timeout=30,
+                 health_check_url=None, health_check_timeout=10,
+                 health_check_retries=3, health_check_interval=2):
         self.pidfile = pidfile
         self.cmd = cmd
         self.app_dir = app_dir
         self.overlap = overlap
         self.timeout = timeout
+        self.health_check_url = health_check_url
+        self.health_check_timeout = health_check_timeout
+        self.health_check_retries = health_check_retries
+        self.health_check_interval = health_check_interval
         self.running = True
         self._reloading = False
         self._config_file = None
@@ -140,6 +148,29 @@ class GunicornHerder:
 
         log.info("New master ready (PID %d)", new_pid)
 
+        # Step 2b: Health check — verify new master is actually serving
+        if self.health_check_url:
+            if not self._health_check(new_pid):
+                log.error(
+                    "Health check failed for new master (PID %d), rolling back",
+                    new_pid,
+                )
+                self._signal(new_pid, signal.SIGTERM)
+                log.info("Sent TERM to new master (PID %d), keeping old master (PID %d)",
+                         new_pid, old_pid)
+                # Wait for new master to actually exit so it doesn't linger
+                # and confuse future reloads (e.g. stale pidfile.2).
+                deadline = time.monotonic() + self.timeout
+                while time.monotonic() < deadline:
+                    if not self._pid_alive(new_pid):
+                        log.info("New master (PID %d) exited after rollback", new_pid)
+                        break
+                    time.sleep(0.2)
+                else:
+                    log.warning("New master (PID %d) did not exit within %ds after rollback",
+                                new_pid, self.timeout)
+                return
+
         # Step 3: WINCH — old master stops accepting, workers drain
         self._signal(old_pid, signal.SIGWINCH)
         log.info(
@@ -163,6 +194,37 @@ class GunicornHerder:
         else:
             log.warning("Old master (PID %d) did not exit within %ds",
                         old_pid, self.timeout)
+
+    def _health_check(self, new_pid):
+        """Hit health_check_url to verify the new master is serving.
+
+        Retries up to health_check_retries times with health_check_interval
+        seconds between attempts. Returns True if a 2xx response is received.
+        """
+        for attempt in range(1, self.health_check_retries + 1):
+            # If the new master died, no point retrying
+            if not self._pid_alive(new_pid):
+                log.error("New master (PID %d) died during health check", new_pid)
+                return False
+
+            try:
+                req = urllib.request.Request(self.health_check_url, method="GET")
+                resp = urllib.request.urlopen(req, timeout=self.health_check_timeout)
+                code = resp.getcode()
+                if 200 <= code < 300:
+                    log.info("Health check passed (HTTP %d) on attempt %d",
+                             code, attempt)
+                    return True
+                log.warning("Health check returned HTTP %d on attempt %d/%d",
+                            code, attempt, self.health_check_retries)
+            except Exception as exc:
+                log.warning("Health check failed on attempt %d/%d: %s",
+                            attempt, self.health_check_retries, exc)
+
+            if attempt < self.health_check_retries:
+                time.sleep(self.health_check_interval)
+
+        return False
 
     # -- helpers --
 
@@ -236,19 +298,46 @@ class GunicornHerder:
 
     def _create_config(self):
         """Create a temporary gunicorn config with a pre_exec hook."""
-        # Escape backslashes/quotes in path for safety
+        # Escape backslashes/quotes in path for embedding in a Python string literal.
         safe_path = self.app_dir.replace("\\", "\\\\").replace("'", "\\'")
-        content = (
-            "import os\n"
-            "\n"
-            "def pre_exec(server):\n"
-            f"    os.chdir('{safe_path}')\n"
-            "    resolved = os.getcwd()\n"
-            "    # Update START_CTX so gunicorn's os.chdir(START_CTX['cwd'])\n"
-            "    # after pre_exec uses the new path, not the old release\n"
-            "    server.START_CTX['cwd'] = resolved\n"
-            f"    server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)\n"
-        )
+        content = textwrap.dedent(f"""\
+            import os
+
+            def pre_exec(server):
+                # Update START_CTX so gunicorn's os.chdir(START_CTX['cwd'])
+                # after pre_exec uses the new release path, not the old one.
+                os.chdir('{safe_path}')
+                resolved = os.getcwd()
+                server.START_CTX['cwd'] = resolved
+                server.log.info('pre_exec: chdir to {safe_path} -> %s', resolved)
+
+                # Update START_CTX[0] to the new venv's python.
+                # The deploy step rewrites each script shebang to the venv's absolute
+                # python path (e.g. $VENV_DIR/bin/python3.11).  Reading it here and
+                # using it as the re-exec executable guarantees the correct Python
+                # version and venv are used — matching how the initial startup works
+                # via the kernel shebang mechanism.
+                if server.START_CTX.get('args'):
+                    gunicorn_bin = os.path.realpath(server.START_CTX['args'][0])
+                    new_python = None
+                    try:
+                        with open(gunicorn_bin, 'r', errors='replace') as _f:
+                            _shebang = _f.readline().strip()
+                        if _shebang.startswith('#!'):
+                            _candidate = _shebang[2:].strip().split()[0]
+                            if os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
+                                new_python = _candidate
+                    except (IOError, OSError):
+                        pass
+                    # Fallback: 'python' alongside the gunicorn script
+                    if not new_python:
+                        _candidate = os.path.join(os.path.dirname(gunicorn_bin), 'python')
+                        if os.path.exists(_candidate):
+                            new_python = _candidate
+                    if new_python:
+                        server.START_CTX[0] = new_python
+                        server.log.info('pre_exec: updated python executable to %s', new_python)
+        """)
         fd, path = tempfile.mkstemp(suffix=".py", prefix="gunicornherder_")
         with os.fdopen(fd, "w") as f:
             f.write(content)
@@ -294,6 +383,28 @@ def main():
         default=30,
         help="Seconds to wait for new master to start (default: 30)",
     )
+    parser.add_argument(
+        "--health-check-url",
+        help="URL to GET after new master starts; rollback on failure",
+    )
+    parser.add_argument(
+        "--health-check-timeout",
+        type=int,
+        default=10,
+        help="Seconds to wait for each health check request (default: 10)",
+    )
+    parser.add_argument(
+        "--health-check-retries",
+        type=int,
+        default=3,
+        help="Number of health check attempts before rollback (default: 3)",
+    )
+    parser.add_argument(
+        "--health-check-interval",
+        type=int,
+        default=2,
+        help="Seconds between health check retries (default: 2)",
+    )
 
     # Split on '--'
     try:
@@ -321,6 +432,10 @@ def main():
         app_dir=args.app_dir,
         overlap=args.overlap,
         timeout=args.timeout,
+        health_check_url=args.health_check_url,
+        health_check_timeout=args.health_check_timeout,
+        health_check_retries=args.health_check_retries,
+        health_check_interval=args.health_check_interval,
     )
     herder.run()
 

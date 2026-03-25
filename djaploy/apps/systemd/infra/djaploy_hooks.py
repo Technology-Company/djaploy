@@ -8,7 +8,7 @@ from djaploy.hooks import deploy_hook
 
 
 @deploy_hook("deploy:configure")
-def reload_systemd_daemon(host_data, project_config, artifact_path):
+def reload_systemd_daemon(host_data, artifact_path):
     """Reload systemd daemon to pick up new service files."""
     from pyinfra.operations import systemd
 
@@ -19,13 +19,12 @@ def reload_systemd_daemon(host_data, project_config, artifact_path):
 
 
 @deploy_hook("deploy:start")
-def start_services(host_data, project_config, artifact_path):
+def start_services(host_data, artifact_path):
     """Start or restart application services after deploy."""
     from pyinfra.operations import systemd
 
-    zero_downtime = (
-        getattr(project_config, "deployment_strategy", "in_place") == "zero_downtime"
-    )
+    from djaploy.infra.utils import is_zero_downtime
+    zero_downtime = is_zero_downtime(host_data)
 
     for service in getattr(host_data, "services", []):
         if zero_downtime:
@@ -63,13 +62,12 @@ def start_services(host_data, project_config, artifact_path):
 
 
 @deploy_hook("rollback")
-def reload_services_on_rollback(host_data, project_config, release):
+def reload_services_on_rollback(host_data, release):
     """Reload or restart services after a rollback."""
     from pyinfra.operations import systemd
+    from djaploy.infra.utils import is_zero_downtime
 
-    zero_downtime = (
-        getattr(project_config, "deployment_strategy", "in_place") == "zero_downtime"
-    )
+    zero_downtime = is_zero_downtime(host_data)
 
     for service in getattr(host_data, "services", []):
         if zero_downtime:

@@ -1,11 +1,12 @@
 """Tests for deployment orchestration (deploy.py) and command files."""
 
 import ast
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from djaploy.config import DjaployConfig
+from djaploy.config import HostConfig
 from djaploy.hooks import HookRegistry
 
 
@@ -33,41 +34,46 @@ class TestCommandFilesAreSyntacticallyValid(unittest.TestCase):
     def test_rollback_parses(self):
         self._check_file("rollback")
 
-    def test_utils_parses(self):
-        self._check_file("_utils")
-
 
 class TestRollbackValidation(unittest.TestCase):
     """Test rollback:precommand hook rejects in_place strategy."""
 
+    def _make_inventory(self, strategy):
+        """Create a temp inventory file with the given deployment_strategy."""
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".py")
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                f"hosts = [('test-host', {{'ssh_hostname': 'localhost', "
+                f"'deployment_strategy': '{strategy}', 'app_name': 'test'}})]\n"
+            )
+        return path
+
     def test_rollback_rejects_in_place_strategy(self):
         from djaploy.builtin_hooks import _rollback_validate_strategy
 
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            deployment_strategy="in_place",
-        )
-
-        context = {"config": config, "env": "production"}
-
-        with self.assertRaises(ValueError) as ctx:
-            _rollback_validate_strategy(context)
-        self.assertIn("zero_downtime", str(ctx.exception))
+        inv = self._make_inventory("in_place")
+        try:
+            context = {"config": None, "env": "production", "inventory_file": inv}
+            with self.assertRaises(ValueError) as ctx:
+                _rollback_validate_strategy(context)
+            self.assertIn("zero_downtime", str(ctx.exception))
+        finally:
+            os.unlink(inv)
 
     def test_rollback_allows_zero_downtime(self):
         from djaploy.builtin_hooks import _rollback_validate_strategy
 
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            deployment_strategy="zero_downtime",
-        )
+        inv = self._make_inventory("zero_downtime")
+        try:
+            context = {"config": None, "env": "production", "inventory_file": inv}
+            # Should not raise
+            _rollback_validate_strategy(context)
+        finally:
+            os.unlink(inv)
 
-        context = {"config": config, "env": "production"}
-        # Should not raise
-        _rollback_validate_strategy(context)
-
+    def test_rollback_allows_zero_downtime(self):
+        from djaploy.builtin_hooks import _rollback_validate_strategy
 
 class TestLocalSettingsHook(unittest.TestCase):
     """Test the deploy:local_settings hook collection."""
@@ -112,12 +118,8 @@ class TestGetCommandFile(unittest.TestCase):
 class TestRunCommandBuildsContext(unittest.TestCase):
     """Test that Python API wrappers build context correctly."""
 
-    def test_deploy_project_builds_context_with_all_fields(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-        )
-
+    @patch("djaploy.deploy._build_pyinfra_data", return_value={"env": "inventory"})
+    def test_deploy_project_builds_context_with_all_fields(self, _mock_data):
         captured_context = {}
 
         def mock_run_command(ctx):
@@ -126,7 +128,6 @@ class TestRunCommandBuildsContext(unittest.TestCase):
         with patch("djaploy.deploy.run_command", side_effect=mock_run_command):
             from djaploy.deploy import deploy_project
             deploy_project(
-                config,
                 "/tmp/inventory.py",
                 mode="release",
                 release_tag="v1.0.0",
@@ -140,13 +141,8 @@ class TestRunCommandBuildsContext(unittest.TestCase):
         self.assertEqual(captured_context["version_bump"], "minor")
         self.assertTrue(captured_context["skip_prepare"])
 
-    def test_rollback_project_builds_context(self):
-        config = DjaployConfig(
-            project_name="test",
-            djaploy_dir="/tmp/infra",
-            deployment_strategy="zero_downtime",
-        )
-
+    @patch("djaploy.deploy._build_pyinfra_data", return_value={"env": "inventory"})
+    def test_rollback_project_builds_context(self, _mock_data):
         captured_context = {}
 
         def mock_run_command(ctx):
@@ -154,7 +150,7 @@ class TestRunCommandBuildsContext(unittest.TestCase):
 
         with patch("djaploy.deploy.run_command", side_effect=mock_run_command):
             from djaploy.deploy import rollback_project
-            rollback_project(config, "/tmp/inventory.py", release="app-v1.2.0")
+            rollback_project("/tmp/inventory.py", release="app-v1.2.0")
 
         self.assertEqual(captured_context["command"], "rollback")
         self.assertEqual(captured_context["release"], "app-v1.2.0")

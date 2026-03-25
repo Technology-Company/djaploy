@@ -8,7 +8,7 @@ from djaploy.hooks import deploy_hook
 
 
 @deploy_hook("configure")
-def configure_nginx(host_data, project_config):
+def configure_nginx(host_data):
     """Install NGINX and create SSL directory."""
     from pyinfra.operations import apt, files
 
@@ -31,7 +31,7 @@ def configure_nginx(host_data, project_config):
 
 
 @deploy_hook("deploy:configure")
-def deploy_nginx(host_data, project_config, artifact_path):
+def deploy_nginx(host_data, artifact_path):
     """Deploy NGINX configuration files and SSL certificates."""
     from pyinfra.operations import server, files
 
@@ -81,7 +81,7 @@ def deploy_nginx(host_data, project_config, artifact_path):
 
 
 @deploy_hook("deploy:start")
-def reload_nginx(host_data, project_config, artifact_path):
+def reload_nginx(host_data, artifact_path):
     """Reload NGINX after all deploy hooks have run."""
     from pyinfra.operations import systemd
 

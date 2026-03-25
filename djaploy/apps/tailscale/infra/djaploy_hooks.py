@@ -10,7 +10,7 @@ from djaploy.hooks import deploy_hook
 
 
 @deploy_hook("configure")
-def configure_tailscale(host_data, project_config):
+def configure_tailscale(host_data):
     """Install and authenticate Tailscale."""
     from pyinfra import host
     from pyinfra.facts.deb import DebPackage
@@ -40,7 +40,7 @@ def configure_tailscale(host_data, project_config):
     )
 
 
-def _generate_tailscale_certs(host_data, project_config):
+def _generate_tailscale_certs(host_data):
     """Generate Tailscale certificates for configured domains."""
     from pyinfra.operations import server, files
 
@@ -57,7 +57,7 @@ def _generate_tailscale_certs(host_data, project_config):
     if not has_tailscale_certs:
         return
 
-    app_user = getattr(host_data, 'app_user', None) or project_config.app_user
+    app_user = getattr(host_data, 'app_user', 'app')
     ssl_dir = f'/home/{app_user}/.ssl'
 
     files.directory(
@@ -88,12 +88,12 @@ def _generate_tailscale_certs(host_data, project_config):
 
 
 @deploy_hook("deploy:configure")
-def deploy_tailscale_certificates(host_data, project_config, artifact_path):
+def deploy_tailscale_certificates(host_data, artifact_path):
     """Generate Tailscale certificates during deploy."""
-    _generate_tailscale_certs(host_data, project_config)
+    _generate_tailscale_certs(host_data)
 
 
 @deploy_hook("sync_certs")
-def sync_tailscale_certificates(host_data, project_config):
+def sync_tailscale_certificates(host_data):
     """Generate Tailscale certificates during sync_certs."""
-    _generate_tailscale_certs(host_data, project_config)
+    _generate_tailscale_certs(host_data)

@@ -25,8 +25,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .config import DjaployConfig
-
 
 # ------------------------------------------------------------------
 # Shared lifecycle (used by both management command and Python API)
@@ -40,13 +38,9 @@ def _get_command_file(name: str) -> Path:
 def run_command(context: Dict[str, Any]) -> None:
     """Execute a command through the 4-hook lifecycle.
 
-    This is the same lifecycle the management command uses.  The Python
-    API wrappers call this so behaviour is identical regardless of
-    entry-point.
-
     Required context keys::
 
-        command, config, env, command_file, inventory_file, pyinfra_data
+        command, env, command_file, inventory_file, pyinfra_data
 
     Lifecycle::
 
@@ -58,17 +52,17 @@ def run_command(context: Dict[str, Any]) -> None:
     """
     from .hooks import discover_hooks, call_hook
 
-    config = context["config"]
-    config.validate()
     discover_hooks()
 
     command_name = context["command"]
 
     # 1. Precommand hooks
+    print(f"Preparing {command_name}...", flush=True)
     call_hook(f"{command_name}:precommand", context)
     call_hook("precommand", context)
 
     # 2. Run pyinfra
+    print("Starting remote execution...", flush=True)
     processed_inventory = _preprocess_inventory(str(context["inventory_file"]))
 
     try:
@@ -101,24 +95,24 @@ def run_command(context: Dict[str, Any]) -> None:
 # Python API wrappers (build context, delegate to run_command)
 # ------------------------------------------------------------------
 
-def configure_server(config: DjaployConfig, inventory_file: str, **kwargs):
+def _build_pyinfra_data(env_name: str) -> Dict[str, str]:
+    """Build the base pyinfra --data dict."""
+    return {"env": env_name}
+
+
+def configure_server(inventory_file: str, **kwargs):
     """Configure servers for deployment."""
     env_name = Path(inventory_file).stem
     run_command({
         "command": "configure",
-        "config": config,
         "env": env_name,
         "command_file": str(_get_command_file("configure")),
         "inventory_file": inventory_file,
-        "pyinfra_data": {
-            "env": env_name,
-            "djaploy_dir": str(config.djaploy_dir),
-        },
+        "pyinfra_data": _build_pyinfra_data(env_name),
     })
 
 
-def deploy_project(config: DjaployConfig,
-                   inventory_file: str,
+def deploy_project(inventory_file: str,
                    mode: str = "latest",
                    release_tag: Optional[str] = None,
                    skip_prepare: bool = False,
@@ -128,7 +122,6 @@ def deploy_project(config: DjaployConfig,
     env_name = Path(inventory_file).stem
     run_command({
         "command": "deploy",
-        "config": config,
         "env": env_name,
         "mode": mode,
         "release": release_tag,
@@ -136,57 +129,75 @@ def deploy_project(config: DjaployConfig,
         "skip_prepare": skip_prepare,
         "command_file": str(_get_command_file("deploy")),
         "inventory_file": inventory_file,
-        "pyinfra_data": {
-            "env": env_name,
-            "djaploy_dir": str(config.djaploy_dir),
-        },
+        "pyinfra_data": _build_pyinfra_data(env_name),
     })
 
 
-def restore_from_backup(config: DjaployConfig,
-                        inventory_file: str,
+def restore_from_backup(inventory_file: str,
                         restore_opts: Dict[str, Any],
                         **kwargs):
     """Restore from backup on target servers via pyinfra."""
     env_name = Path(inventory_file).stem
+    data = _build_pyinfra_data(env_name)
+    data.update({
+        "backup_host_name": restore_opts.get("backup_host_name", ""),
+        "date": restore_opts.get("date", ""),
+        "db_only": str(restore_opts.get("db_only", False)).lower(),
+        "archive": restore_opts.get("archive", ""),
+        "backend": restore_opts.get("backend", ""),
+    })
     run_command({
         "command": "restore",
-        "config": config,
         "env": env_name,
         "restore_opts": restore_opts,
         "command_file": str(_get_command_file("restore")),
         "inventory_file": inventory_file,
-        "pyinfra_data": {
-            "env": env_name,
-            "djaploy_dir": str(config.djaploy_dir),
-            "backup_host_name": restore_opts.get("backup_host_name", ""),
-            "date": restore_opts.get("date", ""),
-            "db_only": str(restore_opts.get("db_only", False)).lower(),
-        },
+        "pyinfra_data": data,
     })
 
 
-def rollback_project(config: DjaployConfig,
-                     inventory_file: str,
+def create_janitor_user(inventory_file: str, **kwargs):
+    """Create the janitor (deploy) user on target servers.
+
+    Connects as root and bootstraps the SSH user with password and
+    sudo access.  Typically the first command run on a fresh server.
+
+    Requires ``djaploy.apps.janitor`` in INSTALLED_APPS.
+    """
+    from .discovery import find_command
+
+    command_file = find_command("createjanitoruser")
+    if not command_file:
+        raise RuntimeError(
+            "Command 'createjanitoruser' not found. "
+            "Add 'djaploy.apps.janitor' to INSTALLED_APPS."
+        )
+    env_name = Path(inventory_file).stem
+    run_command({
+        "command": "createjanitoruser",
+        "env": env_name,
+        "command_file": str(command_file),
+        "inventory_file": inventory_file,
+        "pyinfra_data": _build_pyinfra_data(env_name),
+    })
+
+
+def rollback_project(inventory_file: str,
                      release: Optional[str] = None,
                      **kwargs):
     """Roll back to a previous release."""
     env_name = Path(inventory_file).stem
-    pyinfra_data = {
-        "env": env_name,
-        "djaploy_dir": str(config.djaploy_dir),
-    }
+    data = _build_pyinfra_data(env_name)
     if release:
-        pyinfra_data["release"] = release
+        data["release"] = release
 
     run_command({
         "command": "rollback",
-        "config": config,
         "env": env_name,
         "release": release,
         "command_file": str(_get_command_file("rollback")),
         "inventory_file": inventory_file,
-        "pyinfra_data": pyinfra_data,
+        "pyinfra_data": data,
     })
 
 
@@ -194,33 +205,71 @@ def rollback_project(config: DjaployConfig,
 # Internal helpers (called by hooks in builtin_hooks.py)
 # ------------------------------------------------------------------
 
-def _get_module_config(config: DjaployConfig, name: str) -> Dict[str, Any]:
-    """Get app/hook config by name from module_configs.
+def _load_inventory_hosts(inventory_file: str) -> list:
+    """Load host tuples from an inventory file.
 
-    Checks both the short name (e.g. "versioning") and the legacy
-    fully-qualified path (e.g. "djaploy.modules.versioning") for
-    backwards compatibility.
+    Returns a list of (hostname, data_dict) tuples.  Used by local hooks
+    that need to read HostConfig fields before pyinfra connects.
+
+    If OpSecret objects are used, resolves all secrets in a single
+    1Password call before returning.
     """
-    return (
-        config.module_configs.get(name)
-        or config.module_configs.get(f"djaploy.modules.{name}")
-        or {}
-    )
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_inv_loader", inventory_file)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        sys.modules["_inv_loader"] = module
+        spec.loader.exec_module(module)
+        hosts = list(getattr(module, "hosts", []))
+    finally:
+        sys.modules.pop("_inv_loader", None)
+
+    # Batch-resolve all OpSecret values in one op inject call
+    try:
+        from .certificates import OpSecret
+        OpSecret.resolve_all()
+    except ImportError:
+        pass
+
+    return hosts
 
 
-def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _get_host_conf(hosts: list, key: str) -> Dict[str, Any]:
+    """Read a *_conf dict from the first host in the inventory.
+
+    Used for project-wide settings (notifications, versioning) that
+    apply to the whole deployment, not per-host.
+    """
+    if not hosts:
+        return {}
+    _, data = hosts[0]
+    return (data.get(key) if isinstance(data, dict)
+            else getattr(data, key, None)) or {}
+
+
+def _get_host_field(hosts: list, key: str, default=None):
+    """Read a single field from the first host."""
+    if not hosts:
+        return default
+    _, data = hosts[0]
+    val = (data.get(key) if isinstance(data, dict)
+           else getattr(data, key, None))
+    return val if val is not None else default
+
+
+def _get_release_info(env_name: str, hosts: list, version_bump: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Calculate release info for notifications and tagging.
 
     Returns None if versioning/notifications are not configured.
     """
-    versioning_config = _get_module_config(config, "versioning")
+    versioning_config = _get_host_conf(hosts, "versioning_conf")
     if not versioning_config:
         return None
 
-    notifications_config = _get_module_config(config, "notifications")
+    notifications_config = _get_host_conf(hosts, "notifications_conf")
 
-    backend_config = notifications_config.get("backend_config", {})
-    webhook_url = backend_config.get("webhook_url")
+    webhook_url = notifications_config.get("webhook_url")
     if not webhook_url:
         return None
 
@@ -234,8 +283,9 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
             extract_changelog_from_tag,
         )
         from .changelog import get_changelog_generator
+        from django.conf import settings
 
-        git_dir = config.git_dir
+        git_dir = Path(settings.GIT_DIR)
         current_version = get_latest_version_tag(git_dir)
         commit = get_current_commit_hash(git_dir, short=False)
         commits = get_commits_since_tag(git_dir, current_version)
@@ -265,13 +315,16 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
         tag_environments = versioning_config.get("tag_environments", ["production"])
         notify_environments = notifications_config.get("notify_environments", tag_environments)
 
+        display_name = (notifications_config.get("display_name")
+                        or _get_host_field(hosts, "app_name", "unknown"))
+
         return {
             "current_version": current_version,
             "new_version": new_version,
             "commit": commit or "unknown",
             "commits": commits,
             "changelog": changelog,
-            "display_name": notifications_config.get("display_name", config.project_name),
+            "display_name": display_name,
             "should_notify": env_name in notify_environments,
             "should_tag": env_name in tag_environments,
             "notify_on_failure": notifications_config.get("notify_on_failure", True),
@@ -284,7 +337,7 @@ def _get_release_info(config: DjaployConfig, env_name: str, version_bump: Option
         return None
 
 
-def _send_notification(config: DjaployConfig, env_name: str, release_info: Dict[str, Any], success: bool, error_message: str = ""):
+def _send_notification(env_name: str, hosts: list, release_info: Dict[str, Any], success: bool, error_message: str = ""):
     """Send deployment notification (success or failure)."""
     if not release_info or not release_info.get("should_notify"):
         return
@@ -299,6 +352,7 @@ def _send_notification(config: DjaployConfig, env_name: str, release_info: Dict[
         if not backend:
             return
 
+        display_name = release_info["display_name"]
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         context = {
             "env": env_name,
@@ -307,15 +361,15 @@ def _send_notification(config: DjaployConfig, env_name: str, release_info: Dict[
             "changelog": release_info["changelog"] if success else "",
             "success": success,
             "timestamp": timestamp,
-            "project_name": config.project_name,
-            "display_name": release_info["display_name"],
+            "project_name": display_name,
+            "display_name": display_name,
             "error_message": error_message,
         }
 
         if success:
-            message = f"Deployment succeeded: {config.project_name} {release_info['new_version']} to {env_name}"
+            message = f"Deployment succeeded: {display_name} {release_info['new_version']} to {env_name}"
         else:
-            message = f"Deployment failed for {config.project_name} to {env_name}"
+            message = f"Deployment failed for {display_name} to {env_name}"
             if error_message:
                 message += f": {error_message}"
 
@@ -329,7 +383,7 @@ def _send_notification(config: DjaployConfig, env_name: str, release_info: Dict[
         print(f"[RELEASE] Warning: Failed to send notification: {e}")
 
 
-def _create_version_tag(config: DjaployConfig, env_name: str, release_info: Dict[str, Any]):
+def _create_version_tag(env_name: str, release_info: Dict[str, Any]):
     """Create version tag after successful deployment."""
     if not release_info or not release_info.get("should_tag"):
         return
@@ -340,7 +394,9 @@ def _create_version_tag(config: DjaployConfig, env_name: str, release_info: Dict
 
     try:
         from .versioning import create_git_tag
+        from django.conf import settings
 
+        git_dir = Path(settings.GIT_DIR)
         new_version = release_info["new_version"]
         changelog = release_info.get("changelog", "")
         commits = release_info.get("commits", "")
@@ -352,7 +408,7 @@ def _create_version_tag(config: DjaployConfig, env_name: str, release_info: Dict
 
         push_tags = release_info.get("push_tags", True)
 
-        if create_git_tag(config.git_dir, new_version, message=tag_message, push=push_tags):
+        if create_git_tag(git_dir, new_version, message=tag_message, push=push_tags):
             print(f"[RELEASE] Created tag {new_version}")
             if push_tags:
                 print(f"[RELEASE] Pushed tag to origin")
@@ -406,24 +462,23 @@ def _preprocess_inventory(inventory_file: str) -> str:
     spec = importlib.util.spec_from_file_location("inventory", inventory_file)
     inventory_module = importlib.util.module_from_spec(spec)
 
-    original_path = sys.path[:]
     try:
         sys.modules['inventory'] = inventory_module
         spec.loader.exec_module(inventory_module)
 
         hosts = getattr(inventory_module, 'hosts', [])
 
-        processed_hosts = []
-        for host in hosts:
-            if hasattr(host, '__iter__') and len(host) == 2:
-                processed_hosts.append(host)
-            else:
-                processed_hosts.append(host)
+        # Batch-resolve any OpSecret values before serialization
+        try:
+            from .certificates import OpSecret
+            OpSecret.resolve_all()
+        except ImportError:
+            pass
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
             f.write("# Auto-processed inventory file\n\n")
             f.write("hosts = [\n")
-            for host in processed_hosts:
+            for host in hosts:
                 if isinstance(host, tuple) and len(host) == 2:
                     host_name, host_data = host
                     safe_host_data = {}
@@ -437,7 +492,6 @@ def _preprocess_inventory(inventory_file: str) -> str:
             return f.name
 
     finally:
-        sys.path[:] = original_path
         if 'inventory' in sys.modules:
             del sys.modules['inventory']
 
@@ -445,8 +499,11 @@ def _preprocess_inventory(inventory_file: str) -> str:
 def _make_value_serializable(value):
     """Convert a value to a serializable form for inventory processing."""
     from dataclasses import is_dataclass, asdict
+    from .utils import StringLike
 
-    if is_dataclass(value) and not isinstance(value, type):
+    if isinstance(value, StringLike):
+        return str(value)
+    elif is_dataclass(value) and not isinstance(value, type):
         result = {k: _make_value_serializable(v) for k, v in asdict(value).items()}
         result['__class__'] = value.__class__.__name__
         return result
@@ -467,10 +524,11 @@ def _make_value_serializable(value):
         return value
 
 
-def _run_prepare(prepare_script: Path, config: DjaployConfig):
+def _run_prepare(prepare_script: Path):
     """Run the prepare script if it exists."""
+    from django.conf import settings
     original_dir = os.getcwd()
-    os.chdir(config.project_dir)
+    os.chdir(settings.BASE_DIR)
 
     try:
         subprocess.run([sys.executable, str(prepare_script)], check=True)

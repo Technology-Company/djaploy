@@ -3,7 +3,7 @@ Hook system for djaploy.
 
 Allows Django apps to register functions that run at specific moments in the
 deployment lifecycle. Each app can provide a ``djaploy_hooks.py`` file inside
-its ``infra/`` directory. All hooks from all apps are collected (not first-match-wins).
+its ``infra/`` directory. All hooks from all apps are collected.
 
 Two decorators are provided:
 
@@ -12,16 +12,30 @@ Two decorators are provided:
 - ``@deploy_hook("name")`` — remote hook, runs on target servers via pyinfra.
   Called directly from the command files in ``djaploy/commands/``.
 
+Overriding hooks:
+
+If a later app registers a hook with the **same function name** for the same
+phase, it replaces the earlier one.  Use ``override=True`` to suppress the
+warning::
+
+    @deploy_hook("deploy:configure", override=True)
+    def deploy_nginx(host_data, artifact_path):
+        # This replaces djaploy's built-in deploy_nginx
+        ...
+
 Ordering is controlled by assigning hooks to the correct phase.  Each
 command file calls phases in a fixed sequence (e.g. ``deploy:pre`` →
 ``deploy`` → ``deploy:post``).  Within a single phase hooks run in
-registration order (built-in apps first, then INSTALLED_APPS order).
+registration order (built-in hooks first, then INSTALLED_APPS order).
 """
 
 import importlib.util
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,29 +50,67 @@ class HookRegistry:
     def __init__(self):
         self._hooks: Dict[str, List[Callable]] = {}
         self._remote_hooks: Dict[str, List[RemoteFunctionHook]] = {}
+        # Track which (phase, fn_name) pairs have override=True to suppress
+        # warnings when later duplicates arrive.
+        self._overridden: set = set()  # {(hook_name, fn_name), ...}
         self._discovered = False
 
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
 
-    def register(self, hook_name: str, fn: Callable, *, remote: bool = False) -> None:
-        if remote:
-            self._remote_hooks.setdefault(hook_name, []).append(RemoteFunctionHook(function=fn))
-        else:
-            self._hooks.setdefault(hook_name, []).append(fn)
+    def register(self, hook_name: str, fn: Callable, *, remote: bool = False, override: bool = False) -> None:
+        fn_name = fn.__name__
+        key = (hook_name, fn_name)
 
-    def hook(self, name: str) -> Callable:
-        """Decorator for local hooks (run on the deploying machine)."""
+        if remote:
+            hooks = self._remote_hooks.setdefault(hook_name, [])
+            has_duplicate = any(h.function.__name__ == fn_name for h in hooks)
+        else:
+            hooks = self._hooks.setdefault(hook_name, [])
+            has_duplicate = any(h.__name__ == fn_name for h in hooks)
+
+        if has_duplicate:
+            # Warn unless either side used override=True
+            if not override and key not in self._overridden:
+                log.warning(
+                    "Hook '%s' for phase '%s' already registered, "
+                    "ignoring duplicate from %s (use override=True to suppress)",
+                    fn_name, hook_name, fn.__module__ or "?",
+                )
+            return  # First registration always wins
+
+        if override:
+            self._overridden.add(key)
+
+        if remote:
+            hooks.append(RemoteFunctionHook(function=fn))
+        else:
+            hooks.append(fn)
+
+    def hook(self, name: str, *, override: bool = False) -> Callable:
+        """Decorator for local hooks (run on the deploying machine).
+
+        Args:
+            name: Hook phase name (e.g. "deploy:precommand")
+            override: If True, silently replace a hook with the same
+                      function name.  If False (default), log a warning.
+        """
         def decorator(fn: Callable) -> Callable:
-            self.register(name, fn, remote=False)
+            self.register(name, fn, remote=False, override=override)
             return fn
         return decorator
 
-    def deploy_hook(self, name: str) -> Callable:
-        """Decorator for remote hooks (run on target servers via pyinfra)."""
+    def deploy_hook(self, name: str, *, override: bool = False) -> Callable:
+        """Decorator for remote hooks (run on target servers via pyinfra).
+
+        Args:
+            name: Hook phase name (e.g. "deploy:configure")
+            override: If True, silently replace a hook with the same
+                      function name.  If False (default), log a warning.
+        """
         def decorator(fn: Callable) -> Callable:
-            self.register(name, fn, remote=True)
+            self.register(name, fn, remote=True, override=override)
             return fn
         return decorator
 
@@ -91,17 +143,13 @@ class HookRegistry:
 
         Idempotent — calling multiple times is safe.  Order:
         1. Built-in hooks (notifications, tagging)
-        2. djaploy apps (``djaploy/apps/*/infra/djaploy_hooks.py``)
-        3. Django app hooks (``INSTALLED_APPS`` order)
+        2. Django app hooks (``INSTALLED_APPS`` order, including djaploy apps)
         """
         if self._discovered:
             return
 
         # Load built-in hooks (notifications, tagging) before app hooks
         self._load_builtin_hooks()
-
-        # Load hooks from djaploy's built-in apps (nginx, systemd, etc.)
-        self._load_djaploy_apps()
 
         try:
             from .discovery import get_app_infra_dirs
@@ -123,18 +171,6 @@ class HookRegistry:
         except (ImportError, ModuleNotFoundError):
             pass
 
-    def _load_djaploy_apps(self) -> None:
-        """Load hooks from djaploy/apps/*/infra/djaploy_hooks.py."""
-        apps_dir = Path(__file__).parent / "apps"
-        if not apps_dir.is_dir():
-            return
-        for app_dir in sorted(apps_dir.iterdir()):
-            if not app_dir.is_dir() or app_dir.name.startswith("_"):
-                continue
-            hooks_file = app_dir / "infra" / "djaploy_hooks.py"
-            if hooks_file.is_file():
-                self._load_hooks_file(hooks_file, f"djaploy_{app_dir.name}")
-
     def _load_hooks_file(self, path: Path, app_label: str) -> None:
         module_name = f"djaploy_hooks_{app_label}"
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -151,6 +187,7 @@ class HookRegistry:
         """Reset the registry.  Useful for testing."""
         self._hooks.clear()
         self._remote_hooks.clear()
+        self._overridden.clear()
         self._discovered = False
 
     def get_hook_names(self) -> List[str]:
