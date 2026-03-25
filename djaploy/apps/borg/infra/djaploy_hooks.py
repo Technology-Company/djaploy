@@ -97,21 +97,21 @@ def _init_borg_repo(borg_config, app_user: str, repo_name: str):
 
     # Unset PYTHONPATH to prevent borg (a Python script) from picking up
     # msgpack or other packages from the app's venv.
-    # NOTE: do NOT use _use_sudo_login=True here — sudo -i re-parses the
-    # command through a login shell, which breaks redirects (> /dev/null 2>&1)
-    # and causes `borg info` to fail even when the repo exists.  All binaries
-    # use absolute paths so a login shell is not required.
+    # Break any stale locks first — a previous backup may have crashed
+    # (e.g. storage full) and left a lock that blocks borg info.
     server.shell(
         name="Initialize borg repository if needed",
         commands=[
             f'unset PYTHONPATH && '
             f'export BORG_PASSPHRASE={shlex.quote(passphrase)} && '
             f'{rsh_export}'
+            f'borg break-lock{remote_path} {shlex.quote(repo_url)} 2>/dev/null; '
             f'borg info{remote_path} {shlex.quote(repo_url)} > /dev/null 2>&1 || '
             f'borg init{remote_path} --encryption=repokey-blake2 {shlex.quote(repo_url)}'
         ],
         _sudo=True,
         _sudo_user=app_user,
+        _use_sudo_login=True,
     )
 
 
@@ -419,7 +419,6 @@ def deploy_borg(host_data, artifact_path):
 
     # Setup cron job
     _setup_backup_cron(borg_config, app_user)
-
 
 @deploy_hook("restore")
 def restore_borg(host_data, restore_opts):
