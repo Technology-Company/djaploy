@@ -313,7 +313,13 @@ def _get_release_info(env_name: str, hosts: list, version_bump: Optional[str] = 
                 print(f"[RELEASE] Using changelog from existing tag {current_version}")
 
         tag_environments = versioning_config.get("tag_environments", ["production"])
-        notify_environments = notifications_config.get("notify_environments", tag_environments)
+
+        # Support both boolean `notify` (preferred) and legacy `notify_environments` list
+        if "notify" in notifications_config:
+            should_notify = bool(notifications_config["notify"])
+        else:
+            notify_environments = notifications_config.get("notify_environments", tag_environments)
+            should_notify = env_name in notify_environments
 
         display_name = (notifications_config.get("display_name")
                         or _get_host_field(hosts, "app_name", "unknown"))
@@ -325,7 +331,7 @@ def _get_release_info(env_name: str, hosts: list, version_bump: Optional[str] = 
             "commits": commits,
             "changelog": changelog,
             "display_name": display_name,
-            "should_notify": env_name in notify_environments,
+            "should_notify": should_notify,
             "should_tag": env_name in tag_environments,
             "notify_on_failure": notifications_config.get("notify_on_failure", True),
             "webhook_url": webhook_url,

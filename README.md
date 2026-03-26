@@ -263,50 +263,42 @@ djaploy includes built-in support for semantic versioning, changelog generation,
 
 ### Enabling the feature
 
-Add the `versioning` module to your config and configure notifications:
+Configure `versioning_conf` and `notifications_conf` on your `HostConfig`:
 
 ```python
-# infra/config.py
-from djaploy.config import DjaployConfig
+# infra/inventory/production.py
+from djaploy import HostConfig
 
-config = DjaployConfig(
-    project_name="myapp",
-    # ...
-
-    modules=[
-        "djaploy.modules.core",
-        "djaploy.modules.nginx",
-        "djaploy.modules.systemd",
-        "djaploy.modules.versioning",  # Enable versioning
-    ],
-
-    module_configs={
-        "versioning": {
+hosts = [
+    HostConfig(
+        "web-1",
+        ssh_hostname="192.168.1.100",
+        app_name="myapp",
+        # ...
+        versioning_conf={
             "tag_environments": ["production"],  # Create tags only for these envs
             "increment_type": "patch",           # Default: patch (v1.0.0 -> v1.0.1)
             "push_tags": True,                   # Push tags to remote
         },
-        "notifications": {
+        notifications_conf={
             "display_name": "My App",            # Name shown in notifications
-            "notify_environments": ["production", "staging"],
+            "notify": True,                      # Enable Slack notifications for this env
             "notify_on_failure": True,
+            "webhook_url": "op://vault/slack/webhook-url",
             "changelog_generator": "llm",        # "simple" or "llm"
             "changelog_config": {
                 "api_key": "op://vault/mistral/api-key",  # 1Password reference or plain key
                 "model": "devstral-small-latest",
                 "api_url": "https://api.mistral.ai/v1/chat/completions",
             },
-            "backend_config": {
-                "webhook_url": "op://vault/slack/webhook-url",
-            },
         },
-    },
-)
+    ),
+]
 ```
 
 ### Configuration options
 
-**Versioning (`module_configs["versioning"]`)**
+**Versioning (`versioning_conf`)**
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -315,16 +307,16 @@ config = DjaployConfig(
 | `push_tags` | `True` | Push created tags to remote |
 | `version_file_path` | `"VERSION"` | Path for VERSION file on server |
 
-**Notifications (`module_configs["notifications"]`)**
+**Notifications (`notifications_conf`)**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `display_name` | `project_name` | Name shown in notification messages |
-| `notify_environments` | `tag_environments` | Environments that send notifications |
+| `display_name` | `app_name` | Name shown in notification messages |
+| `notify` | `False` | Enable notifications for this environment |
 | `notify_on_failure` | `True` | Send notification on deployment failure |
+| `webhook_url` | — | Slack webhook URL (required) |
 | `changelog_generator` | `"simple"` | Generator type: `simple` or `llm` |
 | `changelog_config` | `{}` | Config passed to changelog generator |
-| `backend_config.webhook_url` | — | Slack webhook URL (required) |
 
 ### Changelog generators
 
