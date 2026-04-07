@@ -152,11 +152,13 @@ class TestBorgBackupScriptGeneration(unittest.TestCase):
         script = self._generate(config)
         self.assertTrue(script.startswith("#!/bin/bash"))
 
-    def test_script_sets_passphrase(self):
+    def test_script_loads_passphrase_from_env_file(self):
         config = {"passphrase": "my-secret-phrase", "repo_host": ""}
         script = self._generate(config)
-        self.assertIn("BORG_PASSPHRASE", script)
-        self.assertIn("my-secret-phrase", script)
+        # Passphrase should NOT be inline in the script
+        self.assertNotIn("my-secret-phrase", script)
+        # Script should source the separate env file
+        self.assertIn("source /home/app/.borg_env", script)
 
     def test_script_uses_correct_db_path(self):
         config = {"passphrase": "s", "repo_host": "", "db_path": "/data/dbs"}
