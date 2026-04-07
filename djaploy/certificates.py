@@ -2,6 +2,7 @@
 SSL Certificate management for djaploy
 """
 
+import atexit
 import os
 import ssl
 import uuid
@@ -147,6 +148,15 @@ class OpFilePath(StringLike):
             OpFilePath._files[value] = keyfile
         return str(OpFilePath._files[value].name)
 
+    @staticmethod
+    def _cleanup_files():
+        for fobj in OpFilePath._files.values():
+            try:
+                os.unlink(fobj.name)
+            except OSError:
+                pass
+        OpFilePath._files.clear()
+
     @property
     def data(self):
         keyfile = OpFilePath._files[self._data]
@@ -155,6 +165,9 @@ class OpFilePath(StringLike):
     @data.setter
     def data(self, value):
         self._data = value
+
+
+atexit.register(OpFilePath._cleanup_files)
 
 
 class DnsCertificate:
@@ -631,16 +644,25 @@ class SshHttpHook:
         file_mode = config['file_mode']
 
         # Build SSH command prefix
-        ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}"
+        ssh_known_hosts_file = host_data.get('ssh_known_hosts_file', '')
+        if ssh_known_hosts_file:
+            ssh_opts = f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={ssh_known_hosts_file} -p {ssh_port}"
+        else:
+            ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}"
         if ssh_key:
             ssh_key_expanded = os.path.expanduser(ssh_key)
             ssh_opts += f" -i {ssh_key_expanded}"
 
         ssh_cmd = f"ssh {ssh_opts} {ssh_user}@{ssh_host}"
 
-        # Build sudo prefix (with -S for password via stdin if needed)
+        # Build sudo prefix
+        # When a password is needed, pass it via env var to avoid
+        # embedding it inline where it leaks to process lists.
+        sudo_env_line = ""
         if use_sudo and sudo_password:
-            sudo_prefix = f"echo '{sudo_password}' | sudo -S"
+            import shlex as _shlex
+            sudo_env_line = f"export SUDO_PASS={_shlex.quote(sudo_password)}"
+            sudo_prefix = 'printf "%s\\n" "$SUDO_PASS" | sudo -S'
         elif use_sudo:
             sudo_prefix = "sudo"
         else:
@@ -670,11 +692,13 @@ class SshHttpHook:
         combined_cmd = " && ".join(remote_cmds)
 
         # Auth hook script
+        sudo_env_block = f"\n{sudo_env_line}\n" if sudo_env_line else ""
+
         auth_script = f'''#!/bin/bash
 # Auto-generated certbot auth hook for {domain}
 # Host: {host_name} ({env_name})
 set -e
-
+{sudo_env_block}
 echo "Placing challenge for $CERTBOT_DOMAIN on {host_name} ({env_name})"
 
 {ssh_cmd} "{combined_cmd}"
@@ -691,7 +715,7 @@ echo "  Challenge file created: {webroot}/$CERTBOT_TOKEN"
         cleanup_script = f'''#!/bin/bash
 # Auto-generated certbot cleanup hook for {domain}
 # Host: {host_name} ({env_name})
-
+{sudo_env_block}
 echo "Cleaning up challenge for $CERTBOT_DOMAIN on {host_name}"
 
 {ssh_cmd} "{rm_cmd}" || echo "  Warning: Failed to remove challenge file"

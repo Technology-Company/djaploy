@@ -138,6 +138,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     ssh_user: str = "deploy"
     ssh_port: Optional[int] = 22
     ssh_key: Optional[str] = None
+    ssh_known_hosts_file: Optional[str] = None  # Path to known_hosts file for SSH host verification
     ssh_connect_timeout: int = 10  # SSH connection timeout in seconds
     _sudo_password: Optional[str] = None
     
