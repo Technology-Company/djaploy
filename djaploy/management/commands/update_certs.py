@@ -18,13 +18,6 @@ class Command(BaseCommand):
     
     def add_arguments(self, parser):
         parser.add_argument(
-            "--config",
-            type=str,
-            default=None,
-            help="Path to djaploy configuration file (overrides settings)",
-        )
-        
-        parser.add_argument(
             "--email",
             type=str,
             required=True,
@@ -101,6 +94,7 @@ class Command(BaseCommand):
                         is_staging=is_staging,
                         git_dir=git_dir,
                         djaploy_dir=certificates_path.parent,
+                        force_renewal=force_renewal,
                     )
                     
                     # Upload to 1Password

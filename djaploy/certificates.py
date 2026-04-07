@@ -313,12 +313,13 @@ class BunnyDnsCertificate(DnsCertificate):
         email: str,
         is_staging: bool = True,
         git_dir: str = None,
+        force_renewal: bool = False,
         **kwargs,
     ):
         """Issue certificate using Bunny DNS"""
         if git_dir is None:
             git_dir = os.getcwd()
-            
+
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
         os.makedirs(certbot_dir, exist_ok=True)
@@ -361,6 +362,9 @@ class BunnyDnsCertificate(DnsCertificate):
         # Staging flag for testing
         if is_staging:
             command.append("--staging")
+
+        if force_renewal:
+            command.append("--force-renewal")
 
         # Run certbot
         result = subprocess.run(command, capture_output=True, text=True)
@@ -764,6 +768,7 @@ class LetsEncryptCertificate(DnsCertificate):
         git_dir: str = None,
         djaploy_dir: Path = None,
         use_ssh_hook: bool = None,
+        force_renewal: bool = False,
     ):
         """
         Issue certificate using HTTP validation
@@ -878,6 +883,9 @@ class LetsEncryptCertificate(DnsCertificate):
         # Staging flag for testing
         if is_staging:
             command.append("--staging")
+
+        if force_renewal:
+            command.append("--force-renewal")
 
         # Run certbot - capture output for automated modes
         is_automated = bool(http_hook) or self.use_webroot
