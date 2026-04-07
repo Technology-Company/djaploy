@@ -371,7 +371,9 @@ class Command(BaseCommand):
             self._rclone_download(rclone_config, remote_path, db_archive, temp_dir)
 
             archive_path = os.path.join(temp_dir, db_archive)
-            subprocess.run(["tar", "-xzf", archive_path, "-C", temp_dir], check=True)
+            import tarfile
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=temp_dir)
 
             restored_db = self._find_file_in_dir(temp_dir, "db.sqlite3")
             if not restored_db:
@@ -411,7 +413,9 @@ class Command(BaseCommand):
                 shutil.rmtree(media_root)
 
             os.makedirs(media_root, exist_ok=True)
-            subprocess.run(["tar", "-xzf", archive_path, "-C", media_root], check=True)
+            import tarfile
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=media_root)
             self.stdout.write(self.style.SUCCESS("  Media restored locally."))
 
     # ── Rclone: Server restore ───────────────────────────────────────
@@ -492,8 +496,10 @@ class Command(BaseCommand):
             f"sha1sum_command = none\n"
         )
 
-        fd, path = tempfile.mkstemp(suffix=".conf", prefix="rclone_restore_")
-        with os.fdopen(fd, "w") as f:
+        from djaploy.utils import temp_files
+
+        path = temp_files.create(suffix=".conf", prefix="rclone_restore_")
+        with open(path, "w") as f:
             f.write(config_content)
 
         subprocess.run(

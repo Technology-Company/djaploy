@@ -20,7 +20,6 @@ Lifecycle (same as ``manage.py djaploy``)::
 import os
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -216,14 +215,15 @@ def _load_inventory_hosts(inventory_file: str) -> list:
     """
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("_inv_loader", inventory_file)
+    module_name = f"_inv_loader_{id(inventory_file)}"
+    spec = importlib.util.spec_from_file_location(module_name, inventory_file)
     module = importlib.util.module_from_spec(spec)
     try:
-        sys.modules["_inv_loader"] = module
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
         hosts = list(getattr(module, "hosts", []))
     finally:
-        sys.modules.pop("_inv_loader", None)
+        sys.modules.pop(module_name, None)
 
     # Batch-resolve all OpSecret values in one op inject call
     try:
@@ -465,11 +465,12 @@ def _preprocess_inventory(inventory_file: str) -> str:
     """Pre-process inventory file to convert HostConfig objects to pyinfra tuples."""
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("inventory", inventory_file)
+    module_name = f"_inventory_{id(inventory_file)}"
+    spec = importlib.util.spec_from_file_location(module_name, inventory_file)
     inventory_module = importlib.util.module_from_spec(spec)
 
     try:
-        sys.modules['inventory'] = inventory_module
+        sys.modules[module_name] = inventory_module
         spec.loader.exec_module(inventory_module)
 
         hosts = getattr(inventory_module, 'hosts', [])
@@ -481,7 +482,10 @@ def _preprocess_inventory(inventory_file: str) -> str:
         except ImportError:
             pass
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        from .utils import temp_files
+
+        path = temp_files.create(mode='w', suffix='.py')
+        with open(path, 'w') as f:
             f.write("# Auto-processed inventory file\n\n")
             f.write("hosts = [\n")
             for host in hosts:
@@ -495,11 +499,10 @@ def _preprocess_inventory(inventory_file: str) -> str:
                     f.write(f"    {repr(host)},\n")
             f.write("]\n")
 
-            return f.name
+            return path
 
     finally:
-        if 'inventory' in sys.modules:
-            del sys.modules['inventory']
+        sys.modules.pop(module_name, None)
 
 
 def _make_value_serializable(value):
@@ -533,10 +536,5 @@ def _make_value_serializable(value):
 def _run_prepare(prepare_script: Path):
     """Run the prepare script if it exists."""
     from django.conf import settings
-    original_dir = os.getcwd()
-    os.chdir(settings.BASE_DIR)
-
-    try:
-        subprocess.run([sys.executable, str(prepare_script)], check=True)
-    finally:
-        os.chdir(original_dir)
+    subprocess.run([sys.executable, str(prepare_script)], check=True,
+                   cwd=settings.BASE_DIR)

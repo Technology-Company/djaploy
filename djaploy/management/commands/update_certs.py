@@ -99,8 +99,8 @@ class Command(BaseCommand):
                     
                     # Upload to 1Password
                     primary_domain = cert.domains[0]
-                    cert_path = f"certbot/config/live/{primary_domain}/fullchain.pem"
-                    key_path = f"certbot/config/live/{primary_domain}/privkey.pem"
+                    cert_path = os.path.join(git_dir, f"certbot/config/live/{primary_domain}/fullchain.pem")
+                    key_path = os.path.join(git_dir, f"certbot/config/live/{primary_domain}/privkey.pem")
                     
                     cert.upload_cert(
                         crt_path=cert_path,

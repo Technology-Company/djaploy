@@ -2,7 +2,6 @@
 SSL Certificate management for djaploy
 """
 
-import atexit
 import os
 import ssl
 import uuid
@@ -10,7 +9,6 @@ import stat
 import datetime
 import re
 import subprocess
-import tempfile
 import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
@@ -108,30 +106,33 @@ class OpSecret(StringLike):
 
 class OpFilePath(StringLike):
     """
-    Lazy loading file class for 1Password files
+    Lazy loading file class for 1Password files.
+
+    Downloaded secrets are written to temp files managed by
+    :data:`djaploy.utils.temp_files` so they are cleaned up on exit.
     """
-    _files = {}
+    _files: dict[str, str] = {}  # value -> file path
 
     def __new__(cls, value):
+        from .utils import temp_files
+
         if not re.match(r"^/.+", value) and "op://" not in value:
             raise ValueError(
                 f"Invalid secret format: {value}. Must start with / and contain op://"
             )
         if value not in OpFilePath._files:
             import shutil
-            
+
             if not shutil.which("op"):
                 import warnings
                 warnings.warn(
                     f"1Password CLI (op) is not installed. Creating empty temp file for: {value}",
                     UserWarning
                 )
-                keyfile = tempfile.NamedTemporaryFile(delete=False)
-                keyfile.write(b'')
-                keyfile.flush()
-                OpFilePath._files[value] = keyfile
-                return str(keyfile.name)
-                
+                path = temp_files.create(suffix='.pem')
+                OpFilePath._files[value] = path
+                return path
+
             output = subprocess.run(
                 ["op", "inject"],
                 input=OpSecret._create_secret_reference(value),
@@ -141,33 +142,21 @@ class OpFilePath(StringLike):
 
             if output.returncode != 0:
                 raise ValueError(f"{output.stderr}\nFailed to fetch secrets: {value}")
-            keyfile = tempfile.NamedTemporaryFile(delete=False)
-            keyfile.write(output.stdout.encode())
-            keyfile.write("\n".encode())
-            keyfile.flush()
-            OpFilePath._files[value] = keyfile
-        return str(OpFilePath._files[value].name)
 
-    @staticmethod
-    def _cleanup_files():
-        for fobj in OpFilePath._files.values():
-            try:
-                os.unlink(fobj.name)
-            except OSError:
-                pass
-        OpFilePath._files.clear()
+            path = temp_files.create(suffix='.pem')
+            with open(path, 'wb') as f:
+                f.write(output.stdout.encode())
+                f.write(b"\n")
+            OpFilePath._files[value] = path
+        return OpFilePath._files[value]
 
     @property
     def data(self):
-        keyfile = OpFilePath._files[self._data]
-        return keyfile.name
+        return OpFilePath._files[self._data]
 
     @data.setter
     def data(self, value):
         self._data = value
-
-
-atexit.register(OpFilePath._cleanup_files)
 
 
 class DnsCertificate:
@@ -260,8 +249,8 @@ class DnsCertificate:
             expiry_date_str = cert_object["notAfter"]
             expiry_date = datetime.datetime.strptime(
                 expiry_date_str, "%b %d %H:%M:%S %Y %Z"
-            )
-            current_date = datetime.datetime.utcnow()
+            ).replace(tzinfo=datetime.timezone.utc)
+            current_date = datetime.datetime.now(datetime.timezone.utc)
 
             # Check if the certificate is expiring within the given number of days
             if expiry_date <= current_date + datetime.timedelta(
@@ -331,7 +320,8 @@ class BunnyDnsCertificate(DnsCertificate):
             file.write(secret_data)
 
         # Set correct permissions (read-only for owner)
-        os.chmod(bunny_creds_file, stat.S_IRUSR)
+        if os.name != 'nt':
+            os.chmod(bunny_creds_file, stat.S_IRUSR)
 
         # Build certbot command
         command = [
@@ -713,7 +703,8 @@ echo "  Challenge file created: {webroot}/$CERTBOT_TOKEN"
         auth_hook_path = os.path.join(certbot_dir, 'auth_hook.sh')
         with open(auth_hook_path, 'w') as f:
             f.write(auth_script)
-        os.chmod(auth_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        if os.name != 'nt':
+            os.chmod(auth_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         # Cleanup hook script
         cleanup_script = f'''#!/bin/bash
@@ -730,7 +721,8 @@ echo "  Challenge file removed: {webroot}/$CERTBOT_TOKEN"
         cleanup_hook_path = os.path.join(certbot_dir, 'cleanup_hook.sh')
         with open(cleanup_hook_path, 'w') as f:
             f.write(cleanup_script)
-        os.chmod(cleanup_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        if os.name != 'nt':
+            os.chmod(cleanup_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         return auth_hook_path, cleanup_hook_path
 

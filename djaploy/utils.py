@@ -2,6 +2,47 @@
 Utility classes for djaploy
 """
 
+import atexit
+import os
+import tempfile
+
+
+class TempFileManager:
+    """Tracks temporary files and cleans them up on process exit.
+
+    Usage::
+
+        path = temp_files.create(mode='w', suffix='.py')
+        with open(path, 'w') as f:
+            f.write(content)
+
+    All files created through this manager are deleted when the process
+    exits, avoiding leaked secrets and stale temp files on disk.
+    """
+
+    def __init__(self):
+        self._paths: list[str] = []
+
+    def create(self, mode='wb', suffix='', prefix='djaploy_') -> str:
+        """Create a temp file, register it for cleanup, and return its path."""
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
+        os.close(fd)
+        self._paths.append(path)
+        return path
+
+    def cleanup(self):
+        """Remove all tracked temp files. Safe to call multiple times."""
+        for path in self._paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._paths.clear()
+
+
+temp_files = TempFileManager()
+atexit.register(temp_files.cleanup)
+
 
 def python_string(value):
     """Return a safely escaped Python string literal.

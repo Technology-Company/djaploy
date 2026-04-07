@@ -62,24 +62,17 @@ def _sync_certificate(cert, host_data):
 
 
 def _reload_ssl_services(host_data):
-    """Reload services that use SSL certificates."""
+    """Reload nginx to pick up new certificates."""
     from pyinfra.operations import systemd
 
-    # Default services that use SSL
-    ssl_services = ["nginx"]
-
-    # Only reload services that are actually configured for this host
-    host_services = getattr(host_data, 'services', [])
-    for svc in ssl_services:
-        if svc in host_services:
-            systemd.service(
-                name=f"Reload {svc} service after certificate sync",
-                service=svc,
-                running=True,
-                reloaded=True,
-                enabled=True,
-                _sudo=True,
-            )
+    systemd.service(
+        name="Reload nginx after certificate sync",
+        service="nginx",
+        running=True,
+        reloaded=True,
+        enabled=True,
+        _sudo=True,
+    )
 
 
 @deploy_hook("sync_certs")

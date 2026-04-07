@@ -14,7 +14,6 @@ is not the default, set ``ssh_key`` to the path on the target server
 """
 
 import shlex
-import tempfile
 
 from djaploy.hooks import deploy_hook
 
@@ -202,7 +201,8 @@ set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 unset PYTHONPATH
 
-export BORG_PASSPHRASE={shlex.quote(passphrase)}
+# Load passphrase from separate file (deployed with 0600 permissions)
+source /home/{app_user}/.borg_env
 export BORG_REPO={shlex.quote(repo_url)}{rsh_export}{remote_path_export}
 
 LOG_FILE="/home/{app_user}/logs/borg_backup.log"
@@ -267,16 +267,33 @@ log_message "Borg backup completed successfully"
 
 def _deploy_backup_script(borg_config, app_user: str, repo_name: str,
                           host_data):
-    """Deploy borg backup script."""
+    """Deploy borg backup script and passphrase env file."""
     from pyinfra.operations import files
+    from djaploy.utils import temp_files
+
+    # Deploy passphrase in a separate file with restricted permissions
+    passphrase = borg_config.get("passphrase", "")
+    env_path = temp_files.create(suffix='.env')
+    with open(env_path, 'w') as f:
+        f.write(f"export BORG_PASSPHRASE={shlex.quote(passphrase)}\n")
+
+    files.put(
+        name="Deploy borg passphrase env file",
+        src=env_path,
+        dest=f"/home/{app_user}/.borg_env",
+        user=app_user,
+        group=app_user,
+        mode="600",
+        _sudo=True,
+    )
 
     script_content = _generate_backup_script(
         borg_config, app_user, repo_name, host_data
     )
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+    temp_path = temp_files.create(suffix='.sh')
+    with open(temp_path, 'w') as f:
         f.write(script_content)
-        temp_path = f.name
 
     files.put(
         name="Deploy borg backup script",
@@ -544,9 +561,11 @@ log_message "Borg restore complete"
     # Deploy restore script as temp file and execute it
     restore_script_path = f"/home/{app_user}/tmp/borg_restore.sh"
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+    from djaploy.utils import temp_files
+
+    temp_path = temp_files.create(suffix='.sh')
+    with open(temp_path, 'w') as f:
         f.write(f"#!/bin/bash\n{restore_script}")
-        temp_path = f.name
 
     from pyinfra.operations import files
     files.directory(

@@ -210,6 +210,14 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
         for key in kwargs:
             config[key] = kwargs[key]
 
+        # Validate deployment_strategy
+        strategy = config.get("deployment_strategy", "zero_downtime")
+        if strategy not in ("in_place", "zero_downtime"):
+            raise ValueError(
+                f"Invalid deployment_strategy: {strategy!r}. "
+                f"Must be 'in_place' or 'zero_downtime'"
+            )
+
         # Expand SSH key path if provided
         if config.get("ssh_key"):
             import os

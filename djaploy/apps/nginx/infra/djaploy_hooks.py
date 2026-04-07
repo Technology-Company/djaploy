@@ -66,18 +66,19 @@ def deploy_nginx(host_data, artifact_path):
                 _sudo=True,
             )
 
-    # Symlink each site individually to avoid creating a literal '*' symlink
-    # when sites-available is empty, and to avoid enabling unrelated sites
-    # on multi-tenant servers.
-    server.shell(
-        name="Enable NGINX sites",
-        commands=[
-            "for f in /etc/nginx/sites-available/*; do "
-            "[ -f \"$f\" ] && ln -fs \"$f\" /etc/nginx/sites-enabled/; "
-            "done",
-        ],
-        _sudo=True,
-    )
+    # Only enable the site for this app — avoid enabling unrelated sites
+    # on multi-tenant servers. Skip if the config file doesn't exist
+    # (e.g. when nginx_conf={"custom": True} and a custom hook handles it).
+    app_name = getattr(host_data, 'app_name', None)
+    if app_name:
+        server.shell(
+            name=f"Enable {app_name} NGINX site",
+            commands=[
+                f"test -f /etc/nginx/sites-available/{app_name} && "
+                f"ln -fs /etc/nginx/sites-available/{app_name} /etc/nginx/sites-enabled/{app_name} || true",
+            ],
+            _sudo=True,
+        )
 
 
 @deploy_hook("deploy:start")

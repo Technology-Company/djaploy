@@ -9,7 +9,6 @@ to bootstrap the deploy user that all subsequent commands use.
 import importlib.util
 import os
 import sys
-import tempfile
 
 from djaploy.hooks import deploy_hook, hook
 
@@ -36,8 +35,10 @@ def override_inventory_to_root(context):
     # Write a temp inventory with ssh_user forced to root
     from djaploy.deploy import _make_value_serializable
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="janitor_inv_")
-    with os.fdopen(fd, "w") as f:
+    from djaploy.utils import temp_files
+
+    tmp_path = temp_files.create(suffix=".py", prefix="janitor_inv_")
+    with open(tmp_path, "w") as f:
         f.write("# Auto-generated inventory (ssh_user overridden to root)\n\n")
         f.write("hosts = [\n")
         for host_entry in hosts:
