@@ -105,9 +105,9 @@ def _init_borg_repo(borg_config, app_user: str, repo_name: str):
             f'unset PYTHONPATH && '
             f'export BORG_PASSPHRASE={shlex.quote(passphrase)} && '
             f'{rsh_export}'
-            f'borg break-lock{remote_path} {shlex.quote(repo_url)} 2>/dev/null; '
+            f'borg break-lock{remote_path} {shlex.quote(repo_url)} 2>/dev/null || true; '
             f'borg info{remote_path} {shlex.quote(repo_url)} > /dev/null 2>&1 || '
-            f'borg init{remote_path} --encryption=repokey-blake2 {shlex.quote(repo_url)}'
+            f'borg init{remote_path} --encryption=repokey-blake2 {shlex.quote(repo_url)} || true'
         ],
         _sudo=True,
         _sudo_user=app_user,
