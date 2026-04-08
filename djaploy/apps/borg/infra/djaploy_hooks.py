@@ -43,6 +43,11 @@ def _build_borg_rsh(borg_config) -> str:
     """Build BORG_RSH value from config.
 
     Returns empty string for local repos (no repo_host).
+
+    When ``ssh_known_hosts_file`` is set, uses strict host key checking
+    with that file.  This is recommended for Hetzner Storage Boxes —
+    add the box's fingerprint to a known_hosts file on the target server
+    and point this setting at it.
     """
     repo_host = borg_config.get("repo_host", "")
     if not repo_host:
@@ -50,8 +55,13 @@ def _build_borg_rsh(borg_config) -> str:
 
     repo_port = borg_config.get("repo_port", 22)
     ssh_key = borg_config.get("ssh_key", "")
+    known_hosts = borg_config.get("ssh_known_hosts_file", "")
 
-    rsh = f"ssh -o StrictHostKeyChecking=accept-new -p {repo_port}"
+    if known_hosts:
+        # The file is deployed to ~/.ssh/borg_known_hosts by configure_borg
+        rsh = f"ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/borg_known_hosts -p {repo_port}"
+    else:
+        rsh = f"ssh -o StrictHostKeyChecking=accept-new -p {repo_port}"
     if ssh_key:
         rsh += f" -i {ssh_key}"
     return rsh
@@ -131,7 +141,16 @@ def _generate_backup_script(borg_config, app_user: str, repo_name: str,
     # Fall back to HostConfig.db_dir, then generic default
     host_db_dir = getattr(host_data, 'db_dir', None) if not isinstance(host_data, dict) else host_data.get('db_dir')
     db_path = borg_config.get("db_path") or host_db_dir or f"/home/{app_user}/dbs"
-    media_path = borg_config.get("media_path") or f"/home/{app_user}/apps/{app_name}/media"
+    deployment_strategy = (
+        getattr(host_data, 'deployment_strategy', 'zero_downtime')
+        if not isinstance(host_data, dict)
+        else host_data.get('deployment_strategy', 'zero_downtime')
+    )
+    if deployment_strategy == 'zero_downtime':
+        default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
+    else:
+        default_media = f"/home/{app_user}/apps/{app_name}/media"
+    media_path = borg_config.get("media_path") or default_media
 
     if isinstance(databases, str):
         databases = [databases]
@@ -380,11 +399,14 @@ def configure_borg(host_data):
         _sudo=True,
     )
 
-    # Deploy SSH keypair for app user if deploy_key is configured
+    # Deploy SSH config for borg backup
     borg_config = getattr(host_data, 'borg_backup', None)
     if borg_config:
+        repo_host = borg_config.get("repo_host", "")
         deploy_key = borg_config.get("deploy_key", None)
-        if deploy_key:
+
+        # Ensure .ssh directory exists when we need SSH access
+        if deploy_key or repo_host:
             files.directory(
                 name="Ensure .ssh directory for app user",
                 path=f"/home/{app_user}/.ssh",
@@ -394,6 +416,7 @@ def configure_borg(host_data):
                 _sudo=True,
             )
 
+        if deploy_key:
             files.put(
                 name="Deploy SSH private key for borg backup",
                 src=str(deploy_key),
@@ -413,6 +436,22 @@ def configure_borg(host_data):
                     f'> /home/{app_user}/.ssh/id_ed25519.pub && '
                     f'chown {app_user}:{app_user} /home/{app_user}/.ssh/id_ed25519.pub'
                 ],
+                _sudo=True,
+            )
+
+        # When ssh_known_hosts_file is set, deploy it to the target server
+        # so borg uses strict host key checking against known fingerprints
+        # (e.g. Hetzner's published Storage Box fingerprints).
+        # Without it, _build_borg_rsh falls back to accept-new.
+        known_hosts = borg_config.get("ssh_known_hosts_file", "")
+        if repo_host and known_hosts:
+            files.put(
+                name="Deploy borg SSH known_hosts file",
+                src=str(known_hosts),
+                dest=f"/home/{app_user}/.ssh/borg_known_hosts",
+                user=app_user,
+                group=app_user,
+                mode="644",
                 _sudo=True,
             )
 
@@ -469,10 +508,19 @@ def restore_borg(host_data, restore_opts):
         else getattr(borg_config, "db_path", None)
     ) or host_db_dir or f"/home/{app_user}/dbs"
 
+    deployment_strategy = (
+        getattr(host_data, 'deployment_strategy', 'zero_downtime')
+        if not isinstance(host_data, dict)
+        else host_data.get('deployment_strategy', 'zero_downtime')
+    )
+    if deployment_strategy == 'zero_downtime':
+        default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
+    else:
+        default_media = f"/home/{app_user}/apps/{app_name}/media"
     media_path = (
         borg_config.get("media_path") if isinstance(borg_config, dict)
         else getattr(borg_config, "media_path", None)
-    ) or f"/home/{app_user}/apps/{app_name}/media"
+    ) or default_media
 
     archive = restore_opts.get("archive", "latest")
     db_only = restore_opts.get("db_only", False)

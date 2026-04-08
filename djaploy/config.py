@@ -91,6 +91,7 @@ class BorgBackupConfig:
     repo_port: int = 22                    # SSH port
     repo_path: Optional[str] = None        # Path on remote server; defaults to ./backups
     ssh_key: Optional[str] = None          # Path to SSH key on target host (if not default)
+    ssh_known_hosts_file: Optional[str] = None  # Path to known_hosts file on target host for host verification
     deploy_key: Optional[str] = None        # Local path to private key to deploy to target (e.g. OpFilePath)
 
     # Encryption

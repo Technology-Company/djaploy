@@ -224,6 +224,58 @@ class TestBorgBackupScriptGeneration(unittest.TestCase):
         script = self._generate(config)
         self.assertNotIn("BORG_RSH", script)
 
+    def test_script_default_media_path_zero_downtime(self):
+        """Zero-downtime deploys use shared/media by default."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = None
+        host_data.deployment_strategy = "zero_downtime"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('MEDIA_DIR="/home/app/apps/myapp/shared/media"', script)
+
+    def test_script_default_media_path_in_place(self):
+        """In-place deploys use media directly under app path by default."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = None
+        host_data.deployment_strategy = "in_place"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('MEDIA_DIR="/home/app/apps/myapp/media"', script)
+        self.assertNotIn("/shared/media", script)
+
+    def test_script_explicit_media_path_overrides_strategy(self):
+        """Explicit media_path overrides the strategy-derived default."""
+        config = {"passphrase": "s", "repo_host": "", "media_path": "/custom/media"}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = None
+        host_data.deployment_strategy = "zero_downtime"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('MEDIA_DIR="/custom/media"', script)
+        self.assertNotIn("/shared/media", script)
+
+    def test_script_default_db_path_in_place(self):
+        """In-place db_path defaults to host db_dir or /home/{user}/dbs."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = "/home/app/dbs/myapp"
+        host_data.deployment_strategy = "in_place"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('DB_DIR="/home/app/dbs/myapp"', script)
+
+    def test_script_default_db_path_zero_downtime(self):
+        """Zero-downtime db_path defaults to host db_dir or /home/{user}/dbs."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = "/home/app/dbs/myapp"
+        host_data.deployment_strategy = "zero_downtime"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('DB_DIR="/home/app/dbs/myapp"', script)
+
 
 class TestRestoreBackupBackendDetection(unittest.TestCase):
     """Test backend auto-detection in restore_backup management command."""
