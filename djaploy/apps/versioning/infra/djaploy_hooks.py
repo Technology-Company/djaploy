@@ -10,7 +10,6 @@ from djaploy.hooks import deploy_hook
 @deploy_hook("deploy:configure")
 def deploy_version_file(host_data, artifact_path):
     """Deploy VERSION file to server."""
-    import tempfile
     from datetime import datetime, timezone
 
     from pyinfra.operations import files
@@ -40,9 +39,11 @@ DEPLOYED_AT={timestamp}
 ENVIRONMENT={env}
 """
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+    from djaploy.utils import temp_files
+
+    temp_path = temp_files.create(suffix='.txt')
+    with open(temp_path, 'w') as f:
         f.write(version_content)
-        temp_path = f.name
 
     files.put(
         name=f"Deploy VERSION file to {dest_path}",

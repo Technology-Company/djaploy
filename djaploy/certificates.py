@@ -9,7 +9,6 @@ import stat
 import datetime
 import re
 import subprocess
-import tempfile
 import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, TYPE_CHECKING
@@ -107,30 +106,33 @@ class OpSecret(StringLike):
 
 class OpFilePath(StringLike):
     """
-    Lazy loading file class for 1Password files
+    Lazy loading file class for 1Password files.
+
+    Downloaded secrets are written to temp files managed by
+    :data:`djaploy.utils.temp_files` so they are cleaned up on exit.
     """
-    _files = {}
+    _files: dict[str, str] = {}  # value -> file path
 
     def __new__(cls, value):
+        from .utils import temp_files
+
         if not re.match(r"^/.+", value) and "op://" not in value:
             raise ValueError(
                 f"Invalid secret format: {value}. Must start with / and contain op://"
             )
         if value not in OpFilePath._files:
             import shutil
-            
+
             if not shutil.which("op"):
                 import warnings
                 warnings.warn(
                     f"1Password CLI (op) is not installed. Creating empty temp file for: {value}",
                     UserWarning
                 )
-                keyfile = tempfile.NamedTemporaryFile(delete=False)
-                keyfile.write(b'')
-                keyfile.flush()
-                OpFilePath._files[value] = keyfile
-                return str(keyfile.name)
-                
+                path = temp_files.create(suffix='.pem')
+                OpFilePath._files[value] = path
+                return path
+
             output = subprocess.run(
                 ["op", "inject"],
                 input=OpSecret._create_secret_reference(value),
@@ -140,17 +142,17 @@ class OpFilePath(StringLike):
 
             if output.returncode != 0:
                 raise ValueError(f"{output.stderr}\nFailed to fetch secrets: {value}")
-            keyfile = tempfile.NamedTemporaryFile(delete=False)
-            keyfile.write(output.stdout.encode())
-            keyfile.write("\n".encode())
-            keyfile.flush()
-            OpFilePath._files[value] = keyfile
-        return str(OpFilePath._files[value].name)
+
+            path = temp_files.create(suffix='.pem')
+            with open(path, 'wb') as f:
+                f.write(output.stdout.encode())
+                f.write(b"\n")
+            OpFilePath._files[value] = path
+        return OpFilePath._files[value]
 
     @property
     def data(self):
-        keyfile = OpFilePath._files[self._data]
-        return keyfile.name
+        return OpFilePath._files[self._data]
 
     @data.setter
     def data(self, value):
@@ -247,8 +249,8 @@ class DnsCertificate:
             expiry_date_str = cert_object["notAfter"]
             expiry_date = datetime.datetime.strptime(
                 expiry_date_str, "%b %d %H:%M:%S %Y %Z"
-            )
-            current_date = datetime.datetime.utcnow()
+            ).replace(tzinfo=datetime.timezone.utc)
+            current_date = datetime.datetime.now(datetime.timezone.utc)
 
             # Check if the certificate is expiring within the given number of days
             if expiry_date <= current_date + datetime.timedelta(
@@ -300,12 +302,13 @@ class BunnyDnsCertificate(DnsCertificate):
         email: str,
         is_staging: bool = True,
         git_dir: str = None,
+        force_renewal: bool = False,
         **kwargs,
     ):
         """Issue certificate using Bunny DNS"""
         if git_dir is None:
             git_dir = os.getcwd()
-            
+
         # Setup certbot directory
         certbot_dir = os.path.join(git_dir, "certbot")
         os.makedirs(certbot_dir, exist_ok=True)
@@ -317,7 +320,8 @@ class BunnyDnsCertificate(DnsCertificate):
             file.write(secret_data)
 
         # Set correct permissions (read-only for owner)
-        os.chmod(bunny_creds_file, stat.S_IRUSR)
+        if os.name != 'nt':
+            os.chmod(bunny_creds_file, stat.S_IRUSR)
 
         # Build certbot command
         command = [
@@ -348,6 +352,9 @@ class BunnyDnsCertificate(DnsCertificate):
         # Staging flag for testing
         if is_staging:
             command.append("--staging")
+
+        if force_renewal:
+            command.append("--force-renewal")
 
         # Run certbot
         result = subprocess.run(command, capture_output=True, text=True)
@@ -631,16 +638,25 @@ class SshHttpHook:
         file_mode = config['file_mode']
 
         # Build SSH command prefix
-        ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}"
+        ssh_known_hosts_file = host_data.get('ssh_known_hosts_file', '')
+        if ssh_known_hosts_file:
+            ssh_opts = f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={ssh_known_hosts_file} -p {ssh_port}"
+        else:
+            ssh_opts = f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}"
         if ssh_key:
             ssh_key_expanded = os.path.expanduser(ssh_key)
             ssh_opts += f" -i {ssh_key_expanded}"
 
         ssh_cmd = f"ssh {ssh_opts} {ssh_user}@{ssh_host}"
 
-        # Build sudo prefix (with -S for password via stdin if needed)
+        # Build sudo prefix
+        # When a password is needed, pass it via env var to avoid
+        # embedding it inline where it leaks to process lists.
+        sudo_env_line = ""
         if use_sudo and sudo_password:
-            sudo_prefix = f"echo '{sudo_password}' | sudo -S"
+            import shlex as _shlex
+            sudo_env_line = f"export SUDO_PASS={_shlex.quote(sudo_password)}"
+            sudo_prefix = 'printf "%s\\n" "$SUDO_PASS" | sudo -S'
         elif use_sudo:
             sudo_prefix = "sudo"
         else:
@@ -670,11 +686,13 @@ class SshHttpHook:
         combined_cmd = " && ".join(remote_cmds)
 
         # Auth hook script
+        sudo_env_block = f"\n{sudo_env_line}\n" if sudo_env_line else ""
+
         auth_script = f'''#!/bin/bash
 # Auto-generated certbot auth hook for {domain}
 # Host: {host_name} ({env_name})
 set -e
-
+{sudo_env_block}
 echo "Placing challenge for $CERTBOT_DOMAIN on {host_name} ({env_name})"
 
 {ssh_cmd} "{combined_cmd}"
@@ -685,13 +703,14 @@ echo "  Challenge file created: {webroot}/$CERTBOT_TOKEN"
         auth_hook_path = os.path.join(certbot_dir, 'auth_hook.sh')
         with open(auth_hook_path, 'w') as f:
             f.write(auth_script)
-        os.chmod(auth_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        if os.name != 'nt':
+            os.chmod(auth_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         # Cleanup hook script
         cleanup_script = f'''#!/bin/bash
 # Auto-generated certbot cleanup hook for {domain}
 # Host: {host_name} ({env_name})
-
+{sudo_env_block}
 echo "Cleaning up challenge for $CERTBOT_DOMAIN on {host_name}"
 
 {ssh_cmd} "{rm_cmd}" || echo "  Warning: Failed to remove challenge file"
@@ -702,7 +721,8 @@ echo "  Challenge file removed: {webroot}/$CERTBOT_TOKEN"
         cleanup_hook_path = os.path.join(certbot_dir, 'cleanup_hook.sh')
         with open(cleanup_hook_path, 'w') as f:
             f.write(cleanup_script)
-        os.chmod(cleanup_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        if os.name != 'nt':
+            os.chmod(cleanup_hook_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
         return auth_hook_path, cleanup_hook_path
 
@@ -740,6 +760,7 @@ class LetsEncryptCertificate(DnsCertificate):
         git_dir: str = None,
         djaploy_dir: Path = None,
         use_ssh_hook: bool = None,
+        force_renewal: bool = False,
     ):
         """
         Issue certificate using HTTP validation
@@ -854,6 +875,9 @@ class LetsEncryptCertificate(DnsCertificate):
         # Staging flag for testing
         if is_staging:
             command.append("--staging")
+
+        if force_renewal:
+            command.append("--force-renewal")
 
         # Run certbot - capture output for automated modes
         is_automated = bool(http_hook) or self.use_webroot

@@ -6,7 +6,6 @@ and scripts, sets up cron jobs, and handles restore from backup.
 """
 
 import shlex
-import tempfile
 from typing import Any, Dict, List
 
 from djaploy.hooks import deploy_hook
@@ -41,9 +40,11 @@ md5sum_command = none
 sha1sum_command = none"""
 
     # Deploy configuration file using temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+    from djaploy.utils import temp_files
+
+    temp_config_path = temp_files.create(suffix='.conf')
+    with open(temp_config_path, 'w') as f:
         f.write(rclone_config)
-        temp_config_path = f.name
 
     files.put(
         name="Create rclone configuration",
@@ -93,9 +94,11 @@ def _deploy_backup_script(backup_config, app_user: str,
     )
 
     # Deploy backup script using temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+    from djaploy.utils import temp_files
+
+    temp_script_path = temp_files.create(suffix='.sh')
+    with open(temp_script_path, 'w') as f:
         f.write(backup_script)
-        temp_script_path = f.name
 
     files.put(
         name="Create backup script",

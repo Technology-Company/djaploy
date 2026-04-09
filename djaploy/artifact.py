@@ -9,11 +9,20 @@ import gzip
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional
 
 from django.conf import settings
+
+
+def _validate_extra_file(extra_file: str, git_dir: Path) -> Path:
+    """Validate that an extra file path resolves inside the repository root."""
+    resolved = (git_dir / extra_file).resolve()
+    if not resolved.is_relative_to(git_dir.resolve()):
+        raise ValueError(
+            f"Extra file path escapes repository: {extra_file}"
+        )
+    return resolved
 
 
 def _get_git_dir() -> Path:
@@ -74,31 +83,28 @@ def _create_local_artifact(artifact_dir: Path, extra_files: list = None) -> Path
     git_dir = _get_git_dir()
     artifact_file = artifact_dir / "_build.local.tar.gz"
 
-    original_dir = os.getcwd()
-    os.chdir(git_dir)
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--cached"],
+        capture_output=True,
+        check=True,
+        text=True,
+        cwd=git_dir,
+    )
+    file_list = [f for f in result.stdout.splitlines() if f.strip()]
 
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "--cached"],
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-        file_list = [f for f in result.stdout.splitlines() if f.strip()]
+    for extra_file in (extra_files or []):
+        _validate_extra_file(extra_file, git_dir)
+        if (git_dir / extra_file).exists() and extra_file not in file_list:
+            file_list.append(extra_file)
 
-        for extra_file in (extra_files or []):
-            if os.path.exists(extra_file) and extra_file not in file_list:
-                file_list.append(extra_file)
+    import tarfile
+    with tarfile.open(str(artifact_file), "w:gz") as tar:
+        for f in file_list:
+            full_path = git_dir / f
+            if full_path.exists():
+                tar.add(str(full_path), arcname=f)
 
-        import tarfile
-        with tarfile.open(str(artifact_file), "w:gz") as tar:
-            for f in file_list:
-                if os.path.exists(f):
-                    tar.add(f)
-
-        return artifact_file
-    finally:
-        os.chdir(original_dir)
+    return artifact_file
 
 
 def _create_latest_artifact(artifact_dir: Path, extra_files: list = None) -> Path:
@@ -133,51 +139,59 @@ def _create_release_artifact(artifact_dir: Path, release_tag: str, extra_files: 
 
 def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = None) -> Path:
     """Create artifact from a git reference."""
+    import tempfile
+
     git_dir = _get_git_dir()
     artifact_tar = artifact_dir / f"_build.{git_ref}.tar"
     artifact_file = artifact_dir / f"_build.{git_ref}.tar.gz"
 
-    original_dir = os.getcwd()
-    os.chdir(git_dir)
-
-    try:
-        cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), git_ref]
-
-        extra_files = extra_files or []
-        files_to_unstage = []
-        if extra_files:
-            print(f"[ARTIFACT] Adding {len(extra_files)} extra file(s) to archive")
-
+    extra_files = extra_files or []
+    validated_extras = []
+    if extra_files:
+        print(f"[ARTIFACT] Adding {len(extra_files)} extra file(s) to archive")
         for extra_file in extra_files:
-            extra_file_path = git_dir / extra_file
-            if extra_file_path.exists():
-                subprocess.run(["git", "add", "-f", extra_file], check=True)
-                files_to_unstage.append(extra_file)
+            _validate_extra_file(extra_file, git_dir)
+            if (git_dir / extra_file).exists():
+                validated_extras.append(extra_file)
             else:
                 print(f"[ARTIFACT] WARNING: File not found: {extra_file}")
 
-        if files_to_unstage:
+    if validated_extras:
+        # Use an isolated temp index so we never mutate the real staging area.
+        fd, temp_index = tempfile.mkstemp(suffix=".index", dir=str(git_dir))
+        os.close(fd)
+        env = {**os.environ, "GIT_INDEX_FILE": temp_index}
+        try:
+            subprocess.run(
+                ["git", "read-tree", git_ref],
+                check=True, cwd=git_dir, env=env,
+            )
+            for extra_file in validated_extras:
+                subprocess.run(
+                    ["git", "add", "-f", "--", extra_file],
+                    check=True, cwd=git_dir, env=env,
+                )
             tree_hash = subprocess.run(
                 ["git", "write-tree"],
-                capture_output=True,
-                check=True,
-                text=True
+                capture_output=True, check=True, text=True,
+                cwd=git_dir, env=env,
             ).stdout.strip()
+            subprocess.run(
+                ["git", "archive", "--format=tar", "-o", str(artifact_tar), tree_hash],
+                check=True, cwd=git_dir,
+            )
+        finally:
+            if os.path.exists(temp_index):
+                os.remove(temp_index)
+    else:
+        subprocess.run(
+            ["git", "archive", "--format=tar", "-o", str(artifact_tar), git_ref],
+            check=True, cwd=git_dir,
+        )
 
-            cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), tree_hash]
-            subprocess.run(cmd, check=True)
+    with open(str(artifact_tar), 'rb') as f_in:
+        with gzip.open(str(artifact_file), 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    os.remove(str(artifact_tar))
 
-            for extra_file in files_to_unstage:
-                subprocess.run(["git", "reset", "HEAD", extra_file], check=True,
-                             capture_output=True)
-        else:
-            subprocess.run(cmd, check=True)
-
-        with open(str(artifact_tar), 'rb') as f_in:
-            with gzip.open(str(artifact_file), 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        os.remove(str(artifact_tar))
-
-        return artifact_file
-    finally:
-        os.chdir(original_dir)
+    return artifact_file

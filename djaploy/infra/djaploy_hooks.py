@@ -310,7 +310,6 @@ def generate_local_settings(host_data, artifact_path):
             pass
     """
     import posixpath
-    import tempfile
     from pyinfra.operations import files
     from djaploy.infra.utils import is_zero_downtime, get_app_path
 
@@ -380,9 +379,11 @@ def generate_local_settings(host_data, artifact_path):
 
     content = "\n".join(lines)
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    from djaploy.utils import temp_files
+
+    tmp_path = temp_files.create(suffix=".py")
+    with open(tmp_path, "w") as f:
         f.write(content)
-        tmp_path = f.name
 
     files.put(
         name="Deploy local.py settings",

@@ -14,7 +14,6 @@ is not the default, set ``ssh_key`` to the path on the target server
 """
 
 import shlex
-import tempfile
 
 from djaploy.hooks import deploy_hook
 
@@ -44,6 +43,11 @@ def _build_borg_rsh(borg_config) -> str:
     """Build BORG_RSH value from config.
 
     Returns empty string for local repos (no repo_host).
+
+    When ``ssh_known_hosts_file`` is set, uses strict host key checking
+    with that file.  This is recommended for Hetzner Storage Boxes —
+    add the box's fingerprint to a known_hosts file on the target server
+    and point this setting at it.
     """
     repo_host = borg_config.get("repo_host", "")
     if not repo_host:
@@ -51,8 +55,13 @@ def _build_borg_rsh(borg_config) -> str:
 
     repo_port = borg_config.get("repo_port", 22)
     ssh_key = borg_config.get("ssh_key", "")
+    known_hosts = borg_config.get("ssh_known_hosts_file", "")
 
-    rsh = f"ssh -o StrictHostKeyChecking=accept-new -p {repo_port}"
+    if known_hosts:
+        # The file is deployed to ~/.ssh/borg_known_hosts by configure_borg
+        rsh = f"ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/borg_known_hosts -p {repo_port}"
+    else:
+        rsh = f"ssh -o StrictHostKeyChecking=accept-new -p {repo_port}"
     if ssh_key:
         rsh += f" -i {ssh_key}"
     return rsh
@@ -132,7 +141,16 @@ def _generate_backup_script(borg_config, app_user: str, repo_name: str,
     # Fall back to HostConfig.db_dir, then generic default
     host_db_dir = getattr(host_data, 'db_dir', None) if not isinstance(host_data, dict) else host_data.get('db_dir')
     db_path = borg_config.get("db_path") or host_db_dir or f"/home/{app_user}/dbs"
-    media_path = borg_config.get("media_path") or f"/home/{app_user}/apps/{app_name}/media"
+    deployment_strategy = (
+        getattr(host_data, 'deployment_strategy', 'zero_downtime')
+        if not isinstance(host_data, dict)
+        else host_data.get('deployment_strategy', 'zero_downtime')
+    )
+    if deployment_strategy == 'zero_downtime':
+        default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
+    else:
+        default_media = f"/home/{app_user}/apps/{app_name}/media"
+    media_path = borg_config.get("media_path") or default_media
 
     if isinstance(databases, str):
         databases = [databases]
@@ -202,7 +220,8 @@ set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 unset PYTHONPATH
 
-export BORG_PASSPHRASE={shlex.quote(passphrase)}
+# Load passphrase from separate file (deployed with 0600 permissions)
+source /home/{app_user}/.borg_env
 export BORG_REPO={shlex.quote(repo_url)}{rsh_export}{remote_path_export}
 
 LOG_FILE="/home/{app_user}/logs/borg_backup.log"
@@ -267,16 +286,33 @@ log_message "Borg backup completed successfully"
 
 def _deploy_backup_script(borg_config, app_user: str, repo_name: str,
                           host_data):
-    """Deploy borg backup script."""
+    """Deploy borg backup script and passphrase env file."""
     from pyinfra.operations import files
+    from djaploy.utils import temp_files
+
+    # Deploy passphrase in a separate file with restricted permissions
+    passphrase = borg_config.get("passphrase", "")
+    env_path = temp_files.create(suffix='.env')
+    with open(env_path, 'w') as f:
+        f.write(f"export BORG_PASSPHRASE={shlex.quote(passphrase)}\n")
+
+    files.put(
+        name="Deploy borg passphrase env file",
+        src=env_path,
+        dest=f"/home/{app_user}/.borg_env",
+        user=app_user,
+        group=app_user,
+        mode="600",
+        _sudo=True,
+    )
 
     script_content = _generate_backup_script(
         borg_config, app_user, repo_name, host_data
     )
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+    temp_path = temp_files.create(suffix='.sh')
+    with open(temp_path, 'w') as f:
         f.write(script_content)
-        temp_path = f.name
 
     files.put(
         name="Deploy borg backup script",
@@ -363,11 +399,14 @@ def configure_borg(host_data):
         _sudo=True,
     )
 
-    # Deploy SSH keypair for app user if deploy_key is configured
+    # Deploy SSH config for borg backup
     borg_config = getattr(host_data, 'borg_backup', None)
     if borg_config:
+        repo_host = borg_config.get("repo_host", "")
         deploy_key = borg_config.get("deploy_key", None)
-        if deploy_key:
+
+        # Ensure .ssh directory exists when we need SSH access
+        if deploy_key or repo_host:
             files.directory(
                 name="Ensure .ssh directory for app user",
                 path=f"/home/{app_user}/.ssh",
@@ -377,6 +416,7 @@ def configure_borg(host_data):
                 _sudo=True,
             )
 
+        if deploy_key:
             files.put(
                 name="Deploy SSH private key for borg backup",
                 src=str(deploy_key),
@@ -396,6 +436,22 @@ def configure_borg(host_data):
                     f'> /home/{app_user}/.ssh/id_ed25519.pub && '
                     f'chown {app_user}:{app_user} /home/{app_user}/.ssh/id_ed25519.pub'
                 ],
+                _sudo=True,
+            )
+
+        # When ssh_known_hosts_file is set, deploy it to the target server
+        # so borg uses strict host key checking against known fingerprints
+        # (e.g. Hetzner's published Storage Box fingerprints).
+        # Without it, _build_borg_rsh falls back to accept-new.
+        known_hosts = borg_config.get("ssh_known_hosts_file", "")
+        if repo_host and known_hosts:
+            files.put(
+                name="Deploy borg SSH known_hosts file",
+                src=str(known_hosts),
+                dest=f"/home/{app_user}/.ssh/borg_known_hosts",
+                user=app_user,
+                group=app_user,
+                mode="644",
                 _sudo=True,
             )
 
@@ -434,35 +490,67 @@ def restore_borg(host_data, restore_opts):
     if backend and backend != "borg":
         return
 
-    from pyinfra.operations import server, systemd
+    from pyinfra.operations import files, server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"
-    borg_config = getattr(host_data, "borg_backup", None)
+
+    # Use source borg config for cross-env restores (e.g. --env prod --target staging),
+    # fall back to the target host's own borg config for same-env restores.
+    source_borg_config = restore_opts.get("source_borg_config")
+    target_borg_config = getattr(host_data, "borg_backup", None)
+    borg_config = source_borg_config or target_borg_config
     if not borg_config:
         return
 
-    passphrase = borg_config.get("passphrase", "")
-    repo_name = getattr(host_data, 'name', 'unknown-host').replace(" ", "_").lower()
+    source_repo_name = restore_opts.get("source_repo_name", "")
+    repo_name = (
+        source_repo_name
+        or getattr(host_data, 'name', 'unknown-host').replace(" ", "_").lower()
+    )
 
+    # Restore paths come from the *target* host (where files will be written)
     app_name = getattr(host_data, 'app_name', '') if not isinstance(host_data, dict) else host_data.get('app_name', '')
     # Fall back to HostConfig.db_dir, then generic default
     host_db_dir = getattr(host_data, 'db_dir', None) if not isinstance(host_data, dict) else host_data.get('db_dir')
+    target_bc = target_borg_config or {}
     db_path = (
-        borg_config.get("db_path") if isinstance(borg_config, dict)
-        else getattr(borg_config, "db_path", None)
+        target_bc.get("db_path") if isinstance(target_bc, dict)
+        else getattr(target_bc, "db_path", None)
     ) or host_db_dir or f"/home/{app_user}/dbs"
 
+    deployment_strategy = (
+        getattr(host_data, 'deployment_strategy', 'zero_downtime')
+        if not isinstance(host_data, dict)
+        else host_data.get('deployment_strategy', 'zero_downtime')
+    )
+    if deployment_strategy == 'zero_downtime':
+        default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
+    else:
+        default_media = f"/home/{app_user}/apps/{app_name}/media"
     media_path = (
-        borg_config.get("media_path") if isinstance(borg_config, dict)
-        else getattr(borg_config, "media_path", None)
-    ) or f"/home/{app_user}/apps/{app_name}/media"
+        target_bc.get("media_path") if isinstance(target_bc, dict)
+        else getattr(target_bc, "media_path", None)
+    ) or default_media
 
     archive = restore_opts.get("archive", "latest")
     db_only = restore_opts.get("db_only", False)
     services = getattr(host_data, "services", None) or []
 
+    # Repo connection details come from the *source* borg config, but
+    # ssh_known_hosts_file must come from the *target* (the file lives on
+    # the machine running borg, not the machine the backup was taken from).
     repo_url = _build_repo_url(borg_config, repo_name)
-    borg_rsh = _build_borg_rsh(borg_config)
+    if source_borg_config:
+        rsh_config = dict(borg_config)
+        target_known_hosts = (
+            target_bc.get("ssh_known_hosts_file", "")
+            if isinstance(target_bc, dict)
+            else getattr(target_bc, "ssh_known_hosts_file", "")
+        )
+        rsh_config["ssh_known_hosts_file"] = target_known_hosts
+    else:
+        rsh_config = borg_config
+    borg_rsh = _build_borg_rsh(rsh_config)
     rsh_export = f'\nexport BORG_RSH={shlex.quote(borg_rsh)}' if borg_rsh else ''
     remote_path = borg_config.get("remote_path", None)
     remote_path_export = f'\nexport BORG_REMOTE_PATH={shlex.quote(remote_path)}' if remote_path else ''
@@ -484,29 +572,61 @@ def restore_borg(host_data, restore_opts):
         )
 
     # Build restore script
+    #
+    # For cross-env restores the media sits under the *source* host's path
+    # inside the archive, but must be copied to the *target* host's path.
+    source_media_path = restore_opts.get("source_media_path", "")
+    archive_media_path = source_media_path or media_path
+
     media_restore = ""
     if not db_only:
         media_restore = f'''
 # Restore media
-if [ -d "$TEMP_DIR{media_path}" ]; then
-    log_message "Restoring media to {media_path}"
+if [ -d "$TEMP_DIR{archive_media_path}" ]; then
+    log_message "Restoring media from $TEMP_DIR{archive_media_path} to {media_path}"
     mkdir -p "{media_path}"
-    cp -a "$TEMP_DIR{media_path}/." "{media_path}/"
+    cp -a "$TEMP_DIR{archive_media_path}/." "{media_path}/"
     log_message "Media restore complete"
 else
-    log_message "No media found in archive, skipping"
+    log_message "No media found in archive at {archive_media_path}, skipping"
 fi
 '''
 
+    # For cross-env restores, upload a temporary env file with the source
+    # passphrase (0600) instead of inlining it in the script.
+    if source_borg_config:
+        import os as _os
+        passphrase = _os.environ.get("DJAPLOY_SOURCE_BORG_PASSPHRASE", "")
+        restore_env_path = f"/home/{app_user}/.borg_restore_env"
+
+        from djaploy.utils import temp_files as _temp_files
+        _env_tmp = _temp_files.create(suffix='.env')
+        with open(_env_tmp, 'w') as _f:
+            _f.write(f"export BORG_PASSPHRASE={shlex.quote(passphrase)}\n")
+
+        files.put(
+            name="Deploy source borg passphrase for restore",
+            src=_env_tmp,
+            dest=restore_env_path,
+            user=app_user,
+            group=app_user,
+            mode="600",
+            _sudo=True,
+        )
+        passphrase_line = f'source {restore_env_path}'
+    else:
+        restore_env_path = None
+        passphrase_line = f'source /home/{app_user}/.borg_env'
+
     restore_script = f'''set -euo pipefail
 unset PYTHONPATH
-export BORG_PASSPHRASE={shlex.quote(passphrase)}{rsh_export}{remote_path_export}
+{passphrase_line}{rsh_export}{remote_path_export}
 
 REPO={shlex.quote(repo_url)}
 TEMP_DIR="/home/{app_user}/tmp/borg_restore_$$"
 
 log_message() {{ echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1"; }}
-cleanup() {{ rm -rf "$TEMP_DIR"; }}
+cleanup() {{ rm -rf "$TEMP_DIR"; {f'rm -f {shlex.quote(restore_env_path)};' if restore_env_path else ''} }}
 trap cleanup EXIT
 
 ARCHIVE_NAME={archive_ref}
@@ -544,11 +664,12 @@ log_message "Borg restore complete"
     # Deploy restore script as temp file and execute it
     restore_script_path = f"/home/{app_user}/tmp/borg_restore.sh"
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-        f.write(f"#!/bin/bash\n{restore_script}")
-        temp_path = f.name
+    from djaploy.utils import temp_files
 
-    from pyinfra.operations import files
+    temp_path = temp_files.create(suffix='.sh')
+    with open(temp_path, 'w') as f:
+        f.write(f"#!/bin/bash\n{restore_script}")
+
     files.directory(
         name="Ensure tmp directory for borg restore",
         path=f"/home/{app_user}/tmp",
@@ -575,9 +696,13 @@ log_message "Borg restore complete"
         _use_sudo_login=True,
     )
 
+    cleanup_commands = [f"rm -f {restore_script_path}"]
+    if restore_env_path:
+        cleanup_commands.append(f"rm -f {restore_env_path}")
+
     server.shell(
         name="Clean up borg restore script",
-        commands=[f"rm -f {restore_script_path}"],
+        commands=cleanup_commands,
         _sudo=True,
         _sudo_user=app_user,
     )

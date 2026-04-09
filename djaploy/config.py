@@ -91,6 +91,7 @@ class BorgBackupConfig:
     repo_port: int = 22                    # SSH port
     repo_path: Optional[str] = None        # Path on remote server; defaults to ./backups
     ssh_key: Optional[str] = None          # Path to SSH key on target host (if not default)
+    ssh_known_hosts_file: Optional[str] = None  # Path to known_hosts file on target host for host verification
     deploy_key: Optional[str] = None        # Local path to private key to deploy to target (e.g. OpFilePath)
 
     # Encryption
@@ -138,6 +139,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     ssh_user: str = "deploy"
     ssh_port: Optional[int] = 22
     ssh_key: Optional[str] = None
+    ssh_known_hosts_file: Optional[str] = None  # Path to known_hosts file for SSH host verification
     ssh_connect_timeout: int = 10  # SSH connection timeout in seconds
     _sudo_password: Optional[str] = None
     
@@ -208,6 +210,14 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
         # Add any extra kwargs
         for key in kwargs:
             config[key] = kwargs[key]
+
+        # Validate deployment_strategy
+        strategy = config.get("deployment_strategy", "zero_downtime")
+        if strategy not in ("in_place", "zero_downtime"):
+            raise ValueError(
+                f"Invalid deployment_strategy: {strategy!r}. "
+                f"Must be 'in_place' or 'zero_downtime'"
+            )
 
         # Expand SSH key path if provided
         if config.get("ssh_key"):
