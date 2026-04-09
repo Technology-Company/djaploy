@@ -27,7 +27,7 @@ from djaploy.discovery import find_inventory
 
 
 def _safe_extract(archive_path: str, dest: str):
-    """Extract a tar archive, rejecting path traversal and symlinks."""
+    """Extract a tar archive, rejecting path traversal, symlinks, and special files."""
     with tarfile.open(archive_path, "r:gz") as tar:
         if sys.version_info >= (3, 12):
             tar.extractall(path=dest, filter='data')
@@ -35,8 +35,13 @@ def _safe_extract(archive_path: str, dest: str):
             for member in tar.getmembers():
                 if member.issym() or member.islnk():
                     raise ValueError(f"Refusing to extract link: {member.name}")
+                if not (member.isreg() or member.isdir()):
+                    raise ValueError(f"Refusing to extract special file: {member.name}")
                 if os.path.isabs(member.name) or '..' in os.path.normpath(member.name).split(os.sep):
                     raise ValueError(f"Refusing to extract path traversal: {member.name}")
+                drive, _ = os.path.splitdrive(member.name)
+                if drive:
+                    raise ValueError(f"Refusing to extract drive-prefixed path: {member.name}")
             tar.extractall(path=dest)
 
 
