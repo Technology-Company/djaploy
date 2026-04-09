@@ -148,7 +148,21 @@ class Command(BaseCommand):
             if target == "local":
                 self._handle_local_borg(options, borg_config, host_name)
             else:
-                self._handle_server_borg(options, inventory_dir, target, host_name)
+                # Compute source media path from the source inventory so the
+                # restore knows where media lives inside the borg archive.
+                src_app_user = source_config.get("app_user", "app")
+                src_app_name = source_config.get("app_name", "")
+                src_strategy = source_config.get("deployment_strategy", "zero_downtime")
+                source_media_path = getattr(borg_config, "media_path", None)
+                if not source_media_path:
+                    if src_strategy == "zero_downtime":
+                        source_media_path = f"/home/{src_app_user}/apps/{src_app_name}/shared/media"
+                    else:
+                        source_media_path = f"/home/{src_app_user}/apps/{src_app_name}/media"
+                self._handle_server_borg(
+                    options, inventory_dir, target, host_name,
+                    borg_config, source_media_path,
+                )
         else:
             if not backup_config:
                 raise CommandError(
@@ -259,8 +273,10 @@ class Command(BaseCommand):
 
     # ── Borg: Server restore ─────────────────────────────────────────
 
-    def _handle_server_borg(self, options, inventory_dir, target, host_name):
+    def _handle_server_borg(self, options, inventory_dir, target, host_name, source_borg_config=None, source_media_path=None):
         """Restore on a remote server using pyinfra and the borg hook."""
+        from dataclasses import asdict, is_dataclass
+
         from djaploy import restore_from_backup
 
         target_inventory_file = str(Path(inventory_dir) / f"{target}.py")
@@ -268,15 +284,18 @@ class Command(BaseCommand):
             raise CommandError(f"Target inventory file not found: {target_inventory_file}")
 
         if options["list_backups"]:
-            # For --list with server target, list archives from the target's borg config
-            target_hosts = _load_inventory_hosts(target_inventory_file)
-            if not target_hosts:
-                raise CommandError(f"No hosts found in {target} inventory.")
-            borg_config = target_hosts[0][1].get("borg_backup")
-            if not borg_config:
-                raise CommandError(f"No borg_backup configuration on {target}.")
-            repo_name = target_hosts[0][1].get("name", "unknown").replace(" ", "_").lower()
-            repo_url, borg_env = self._build_borg_env(borg_config, repo_name)
+            # For --list with server target, list archives from the source borg config
+            borg_cfg = source_borg_config
+            repo_name = host_name
+            if not borg_cfg:
+                target_hosts = _load_inventory_hosts(target_inventory_file)
+                if not target_hosts:
+                    raise CommandError(f"No hosts found in {target} inventory.")
+                borg_cfg = target_hosts[0][1].get("borg_backup")
+                repo_name = target_hosts[0][1].get("name", "unknown").replace(" ", "_").lower()
+            if not borg_cfg:
+                raise CommandError(f"No borg_backup configuration found.")
+            repo_url, borg_env = self._build_borg_env(borg_cfg, repo_name)
             self._borg_list_archives(repo_url, borg_env)
             return
 
@@ -287,7 +306,19 @@ class Command(BaseCommand):
             "archive": archive,
             "db_only": options["db_only"],
             "backend": "borg",
+            "source_repo_name": host_name,
         }
+        if source_media_path:
+            restore_opts["source_media_path"] = source_media_path
+
+        # Pass source borg config so the hook connects to the correct repo
+        if source_borg_config:
+            if is_dataclass(source_borg_config) and not isinstance(source_borg_config, type):
+                restore_opts["source_borg_config"] = asdict(source_borg_config)
+            elif isinstance(source_borg_config, dict):
+                restore_opts["source_borg_config"] = source_borg_config
+            else:
+                restore_opts["source_borg_config"] = dict(source_borg_config)
 
         try:
             restore_from_backup(target_inventory_file, restore_opts)

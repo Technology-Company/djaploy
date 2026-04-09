@@ -23,7 +23,17 @@ restore_opts = {
     else bool(getattr(host.data, "db_only", False)),
     "archive": getattr(host.data, "archive", "latest"),
     "backend": getattr(host.data, "backend", ""),
+    "source_repo_name": getattr(host.data, "source_repo_name", ""),
+    "source_media_path": getattr(host.data, "source_media_path", ""),
 }
+
+# Source borg config for cross-env restores (pyinfra may auto-parse the JSON)
+_source_borg = getattr(host.data, "source_borg_config", "")
+if _source_borg:
+    if isinstance(_source_borg, str):
+        import json
+        _source_borg = json.loads(_source_borg)
+    restore_opts["source_borg_config"] = _source_borg
 
 for phase in ("restore:pre", "restore", "restore:post"):
     for hook in registry.get_remote_hooks(phase):

@@ -493,19 +493,29 @@ def restore_borg(host_data, restore_opts):
     from pyinfra.operations import server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"
-    borg_config = getattr(host_data, "borg_backup", None)
+
+    # Use source borg config for cross-env restores (e.g. --env prod --target staging),
+    # fall back to the target host's own borg config for same-env restores.
+    source_borg_config = restore_opts.get("source_borg_config")
+    target_borg_config = getattr(host_data, "borg_backup", None)
+    borg_config = source_borg_config or target_borg_config
     if not borg_config:
         return
 
-    passphrase = borg_config.get("passphrase", "")
-    repo_name = getattr(host_data, 'name', 'unknown-host').replace(" ", "_").lower()
+    source_repo_name = restore_opts.get("source_repo_name", "")
+    repo_name = (
+        source_repo_name
+        or getattr(host_data, 'name', 'unknown-host').replace(" ", "_").lower()
+    )
 
+    # Restore paths come from the *target* host (where files will be written)
     app_name = getattr(host_data, 'app_name', '') if not isinstance(host_data, dict) else host_data.get('app_name', '')
     # Fall back to HostConfig.db_dir, then generic default
     host_db_dir = getattr(host_data, 'db_dir', None) if not isinstance(host_data, dict) else host_data.get('db_dir')
+    target_bc = target_borg_config or {}
     db_path = (
-        borg_config.get("db_path") if isinstance(borg_config, dict)
-        else getattr(borg_config, "db_path", None)
+        target_bc.get("db_path") if isinstance(target_bc, dict)
+        else getattr(target_bc, "db_path", None)
     ) or host_db_dir or f"/home/{app_user}/dbs"
 
     deployment_strategy = (
@@ -518,14 +528,15 @@ def restore_borg(host_data, restore_opts):
     else:
         default_media = f"/home/{app_user}/apps/{app_name}/media"
     media_path = (
-        borg_config.get("media_path") if isinstance(borg_config, dict)
-        else getattr(borg_config, "media_path", None)
+        target_bc.get("media_path") if isinstance(target_bc, dict)
+        else getattr(target_bc, "media_path", None)
     ) or default_media
 
     archive = restore_opts.get("archive", "latest")
     db_only = restore_opts.get("db_only", False)
     services = getattr(host_data, "services", None) or []
 
+    # Repo connection details come from the *source* borg config
     repo_url = _build_repo_url(borg_config, repo_name)
     borg_rsh = _build_borg_rsh(borg_config)
     rsh_export = f'\nexport BORG_RSH={shlex.quote(borg_rsh)}' if borg_rsh else ''
@@ -549,23 +560,37 @@ def restore_borg(host_data, restore_opts):
         )
 
     # Build restore script
+    #
+    # For cross-env restores the media sits under the *source* host's path
+    # inside the archive, but must be copied to the *target* host's path.
+    source_media_path = restore_opts.get("source_media_path", "")
+    archive_media_path = source_media_path or media_path
+
     media_restore = ""
     if not db_only:
         media_restore = f'''
 # Restore media
-if [ -d "$TEMP_DIR{media_path}" ]; then
-    log_message "Restoring media to {media_path}"
+if [ -d "$TEMP_DIR{archive_media_path}" ]; then
+    log_message "Restoring media from $TEMP_DIR{archive_media_path} to {media_path}"
     mkdir -p "{media_path}"
-    cp -a "$TEMP_DIR{media_path}/." "{media_path}/"
+    cp -a "$TEMP_DIR{archive_media_path}/." "{media_path}/"
     log_message "Media restore complete"
 else
-    log_message "No media found in archive, skipping"
+    log_message "No media found in archive at {archive_media_path}, skipping"
 fi
 '''
 
+    # For cross-env restores, inline the source passphrase instead of
+    # sourcing .borg_env (which has the target host's passphrase).
+    if source_borg_config:
+        passphrase = borg_config.get("passphrase", "")
+        passphrase_line = f'export BORG_PASSPHRASE={shlex.quote(passphrase)}'
+    else:
+        passphrase_line = f'source /home/{app_user}/.borg_env'
+
     restore_script = f'''set -euo pipefail
 unset PYTHONPATH
-source /home/{app_user}/.borg_env{rsh_export}{remote_path_export}
+{passphrase_line}{rsh_export}{remote_path_export}
 
 REPO={shlex.quote(repo_url)}
 TEMP_DIR="/home/{app_user}/tmp/borg_restore_$$"

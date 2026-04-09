@@ -136,6 +136,8 @@ def restore_from_backup(inventory_file: str,
                         restore_opts: Dict[str, Any],
                         **kwargs):
     """Restore from backup on target servers via pyinfra."""
+    import json
+
     env_name = Path(inventory_file).stem
     data = _build_pyinfra_data(env_name)
     data.update({
@@ -145,6 +147,13 @@ def restore_from_backup(inventory_file: str,
         "archive": restore_opts.get("archive", ""),
         "backend": restore_opts.get("backend", ""),
     })
+    # Pass source borg config for cross-env restores (e.g. --env prod --target staging)
+    if restore_opts.get("source_borg_config"):
+        data["source_borg_config"] = json.dumps(restore_opts["source_borg_config"])
+    if restore_opts.get("source_repo_name"):
+        data["source_repo_name"] = restore_opts["source_repo_name"]
+    if restore_opts.get("source_media_path"):
+        data["source_media_path"] = restore_opts["source_media_path"]
     run_command({
         "command": "restore",
         "env": env_name,
