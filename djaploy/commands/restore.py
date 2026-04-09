@@ -27,12 +27,9 @@ restore_opts = {
     "source_media_path": getattr(host.data, "source_media_path", ""),
 }
 
-# Source borg config for cross-env restores (pyinfra may auto-parse the JSON)
+# Source borg config for cross-env restores (pyinfra auto-parses the JSON from --data)
 _source_borg = getattr(host.data, "source_borg_config", "")
 if _source_borg:
-    if isinstance(_source_borg, str):
-        import json
-        _source_borg = json.loads(_source_borg)
     restore_opts["source_borg_config"] = _source_borg
 
 for phase in ("restore:pre", "restore", "restore:post"):

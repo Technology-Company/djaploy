@@ -536,9 +536,21 @@ def restore_borg(host_data, restore_opts):
     db_only = restore_opts.get("db_only", False)
     services = getattr(host_data, "services", None) or []
 
-    # Repo connection details come from the *source* borg config
+    # Repo connection details come from the *source* borg config, but
+    # ssh_known_hosts_file must come from the *target* (the file lives on
+    # the machine running borg, not the machine the backup was taken from).
     repo_url = _build_repo_url(borg_config, repo_name)
-    borg_rsh = _build_borg_rsh(borg_config)
+    if source_borg_config:
+        rsh_config = dict(borg_config)
+        target_known_hosts = (
+            target_bc.get("ssh_known_hosts_file", "")
+            if isinstance(target_bc, dict)
+            else getattr(target_bc, "ssh_known_hosts_file", "")
+        )
+        rsh_config["ssh_known_hosts_file"] = target_known_hosts
+    else:
+        rsh_config = borg_config
+    borg_rsh = _build_borg_rsh(rsh_config)
     rsh_export = f'\nexport BORG_RSH={shlex.quote(borg_rsh)}' if borg_rsh else ''
     remote_path = borg_config.get("remote_path", None)
     remote_path_export = f'\nexport BORG_REMOTE_PATH={shlex.quote(remote_path)}' if remote_path else ''
