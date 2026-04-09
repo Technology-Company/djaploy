@@ -14,6 +14,8 @@ And two modes:
 import os
 import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -22,6 +24,20 @@ from django.core.management import BaseCommand, CommandError
 
 from djaploy.deploy import _load_inventory_hosts
 from djaploy.discovery import find_inventory
+
+
+def _safe_extract(archive_path: str, dest: str):
+    """Extract a tar archive, rejecting path traversal and symlinks."""
+    with tarfile.open(archive_path, "r:gz") as tar:
+        if sys.version_info >= (3, 12):
+            tar.extractall(path=dest, filter='data')
+        else:
+            for member in tar.getmembers():
+                if member.issym() or member.islnk():
+                    raise ValueError(f"Refusing to extract link: {member.name}")
+                if os.path.isabs(member.name) or '..' in os.path.normpath(member.name).split(os.sep):
+                    raise ValueError(f"Refusing to extract path traversal: {member.name}")
+            tar.extractall(path=dest)
 
 
 class Command(BaseCommand):
@@ -371,9 +387,7 @@ class Command(BaseCommand):
             self._rclone_download(rclone_config, remote_path, db_archive, temp_dir)
 
             archive_path = os.path.join(temp_dir, db_archive)
-            import tarfile
-            with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(path=temp_dir)
+            _safe_extract(archive_path, temp_dir)
 
             restored_db = self._find_file_in_dir(temp_dir, "db.sqlite3")
             if not restored_db:
@@ -413,9 +427,7 @@ class Command(BaseCommand):
                 shutil.rmtree(media_root)
 
             os.makedirs(media_root, exist_ok=True)
-            import tarfile
-            with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(path=media_root)
+            _safe_extract(archive_path, media_root)
             self.stdout.write(self.style.SUCCESS("  Media restored locally."))
 
     # ── Rclone: Server restore ───────────────────────────────────────

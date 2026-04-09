@@ -12,7 +12,7 @@ class TempFileManager:
 
     Usage::
 
-        path = temp_files.create(mode='w', suffix='.py')
+        path = temp_files.create(suffix='.py')
         with open(path, 'w') as f:
             f.write(content)
 
@@ -23,7 +23,7 @@ class TempFileManager:
     def __init__(self):
         self._paths: list[str] = []
 
-    def create(self, mode='wb', suffix='', prefix='djaploy_') -> str:
+    def create(self, suffix='', prefix='djaploy_') -> str:
         """Create a temp file, register it for cleanup, and return its path."""
         fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
         os.close(fd)

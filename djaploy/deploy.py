@@ -484,7 +484,7 @@ def _preprocess_inventory(inventory_file: str) -> str:
 
         from .utils import temp_files
 
-        path = temp_files.create(mode='w', suffix='.py')
+        path = temp_files.create(suffix='.py')
         with open(path, 'w') as f:
             f.write("# Auto-processed inventory file\n\n")
             f.write("hosts = [\n")

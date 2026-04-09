@@ -159,14 +159,9 @@ def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = N
 
             cmd = ["git", "archive", "--format=tar", "-o", str(artifact_tar), tree_hash]
             subprocess.run(cmd, check=True, cwd=git_dir)
-
-            for extra_file in files_to_unstage:
-                subprocess.run(["git", "reset", "HEAD", extra_file], check=True,
-                             capture_output=True, cwd=git_dir)
         else:
             subprocess.run(cmd, check=True, cwd=git_dir)
     finally:
-        # Ensure unstaged files are cleaned up even on failure
         for extra_file in files_to_unstage:
             subprocess.run(["git", "reset", "HEAD", extra_file],
                          capture_output=True, cwd=git_dir)

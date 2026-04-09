@@ -22,15 +22,16 @@ def override_inventory_to_root(context):
     """
     inventory_file = context["inventory_file"]
 
-    spec = importlib.util.spec_from_file_location("_janitor_inv", inventory_file)
+    module_name = f"_janitor_inv_{id(inventory_file)}"
+    spec = importlib.util.spec_from_file_location(module_name, inventory_file)
     module = importlib.util.module_from_spec(spec)
 
     try:
-        sys.modules["_janitor_inv"] = module
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
         hosts = getattr(module, "hosts", [])
     finally:
-        sys.modules.pop("_janitor_inv", None)
+        sys.modules.pop(module_name, None)
 
     # Write a temp inventory with ssh_user forced to root
     from djaploy.deploy import _make_value_serializable

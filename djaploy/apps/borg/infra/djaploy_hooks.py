@@ -565,7 +565,7 @@ fi
 
     restore_script = f'''set -euo pipefail
 unset PYTHONPATH
-export BORG_PASSPHRASE={shlex.quote(passphrase)}{rsh_export}{remote_path_export}
+source /home/{app_user}/.borg_env{rsh_export}{remote_path_export}
 
 REPO={shlex.quote(repo_url)}
 TEMP_DIR="/home/{app_user}/tmp/borg_restore_$$"
