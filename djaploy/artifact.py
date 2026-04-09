@@ -158,7 +158,8 @@ def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = N
 
     if validated_extras:
         # Use an isolated temp index so we never mutate the real staging area.
-        temp_index = tempfile.mktemp(suffix=".index", dir=str(git_dir))
+        fd, temp_index = tempfile.mkstemp(suffix=".index", dir=str(git_dir))
+        os.close(fd)
         env = {**os.environ, "GIT_INDEX_FILE": temp_index}
         try:
             subprocess.run(

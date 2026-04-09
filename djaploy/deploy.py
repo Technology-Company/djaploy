@@ -20,6 +20,7 @@ Lifecycle (same as ``manage.py djaploy``)::
 import os
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -224,7 +225,7 @@ def _load_inventory_hosts(inventory_file: str) -> list:
     """
     import importlib.util
 
-    module_name = f"_inv_loader_{id(inventory_file)}"
+    module_name = f"_inv_loader_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, inventory_file)
     module = importlib.util.module_from_spec(spec)
     try:
@@ -474,7 +475,7 @@ def _preprocess_inventory(inventory_file: str) -> str:
     """Pre-process inventory file to convert HostConfig objects to pyinfra tuples."""
     import importlib.util
 
-    module_name = f"_inventory_{id(inventory_file)}"
+    module_name = f"_inventory_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, inventory_file)
     inventory_module = importlib.util.module_from_spec(spec)
 

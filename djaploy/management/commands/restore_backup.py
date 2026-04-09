@@ -299,7 +299,7 @@ class Command(BaseCommand):
                 borg_cfg = target_hosts[0][1].get("borg_backup")
                 repo_name = target_hosts[0][1].get("name", "unknown").replace(" ", "_").lower()
             if not borg_cfg:
-                raise CommandError(f"No borg_backup configuration found.")
+                raise CommandError("No borg_backup configuration found.")
             repo_url, borg_env = self._build_borg_env(borg_cfg, repo_name)
             self._borg_list_archives(repo_url, borg_env)
             return

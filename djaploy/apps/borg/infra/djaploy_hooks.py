@@ -490,7 +490,7 @@ def restore_borg(host_data, restore_opts):
     if backend and backend != "borg":
         return
 
-    from pyinfra.operations import server, systemd
+    from pyinfra.operations import files, server, systemd
 
     app_user = getattr(host_data, "app_user", None) or "app"
 
@@ -592,12 +592,29 @@ else
 fi
 '''
 
-    # For cross-env restores, inline the source passphrase instead of
-    # sourcing .borg_env (which has the target host's passphrase).
+    # For cross-env restores, upload a temporary env file with the source
+    # passphrase (0600) instead of inlining it in the script.
     if source_borg_config:
         passphrase = borg_config.get("passphrase", "")
-        passphrase_line = f'export BORG_PASSPHRASE={shlex.quote(passphrase)}'
+        restore_env_path = f"/home/{app_user}/.borg_restore_env"
+
+        from djaploy.utils import temp_files as _temp_files
+        _env_tmp = _temp_files.create(suffix='.env')
+        with open(_env_tmp, 'w') as _f:
+            _f.write(f"export BORG_PASSPHRASE={shlex.quote(passphrase)}\n")
+
+        files.put(
+            name="Deploy source borg passphrase for restore",
+            src=_env_tmp,
+            dest=restore_env_path,
+            user=app_user,
+            group=app_user,
+            mode="600",
+            _sudo=True,
+        )
+        passphrase_line = f'source {restore_env_path}'
     else:
+        restore_env_path = None
         passphrase_line = f'source /home/{app_user}/.borg_env'
 
     restore_script = f'''set -euo pipefail
@@ -652,7 +669,6 @@ log_message "Borg restore complete"
     with open(temp_path, 'w') as f:
         f.write(f"#!/bin/bash\n{restore_script}")
 
-    from pyinfra.operations import files
     files.directory(
         name="Ensure tmp directory for borg restore",
         path=f"/home/{app_user}/tmp",
@@ -679,9 +695,13 @@ log_message "Borg restore complete"
         _use_sudo_login=True,
     )
 
+    cleanup_commands = [f"rm -f {restore_script_path}"]
+    if restore_env_path:
+        cleanup_commands.append(f"rm -f {restore_env_path}")
+
     server.shell(
         name="Clean up borg restore script",
-        commands=[f"rm -f {restore_script_path}"],
+        commands=cleanup_commands,
         _sudo=True,
         _sudo_user=app_user,
     )
