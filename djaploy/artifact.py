@@ -168,7 +168,7 @@ def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = N
             )
             for extra_file in validated_extras:
                 subprocess.run(
-                    ["git", "add", "-f", extra_file],
+                    ["git", "add", "-f", "--", extra_file],
                     check=True, cwd=git_dir, env=env,
                 )
             tree_hash = subprocess.run(

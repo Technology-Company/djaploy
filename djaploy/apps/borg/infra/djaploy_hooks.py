@@ -595,7 +595,8 @@ fi
     # For cross-env restores, upload a temporary env file with the source
     # passphrase (0600) instead of inlining it in the script.
     if source_borg_config:
-        passphrase = borg_config.get("passphrase", "")
+        import os as _os
+        passphrase = _os.environ.get("DJAPLOY_SOURCE_BORG_PASSPHRASE", "")
         restore_env_path = f"/home/{app_user}/.borg_restore_env"
 
         from djaploy.utils import temp_files as _temp_files
@@ -625,7 +626,7 @@ REPO={shlex.quote(repo_url)}
 TEMP_DIR="/home/{app_user}/tmp/borg_restore_$$"
 
 log_message() {{ echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1"; }}
-cleanup() {{ rm -rf "$TEMP_DIR"; }}
+cleanup() {{ rm -rf "$TEMP_DIR"; {f'rm -f {shlex.quote(restore_env_path)};' if restore_env_path else ''} }}
 trap cleanup EXIT
 
 ARCHIVE_NAME={archive_ref}

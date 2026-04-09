@@ -70,6 +70,7 @@ def run_command(context: Dict[str, Any]) -> None:
             str(context["command_file"]),
             processed_inventory,
             data=context.get("pyinfra_data", {}),
+            extra_env=context.get("extra_env"),
         )
         context["success"] = True
     except Exception as e:
@@ -148,21 +149,32 @@ def restore_from_backup(inventory_file: str,
         "archive": restore_opts.get("archive", ""),
         "backend": restore_opts.get("backend", ""),
     })
-    # Pass source borg config for cross-env restores (e.g. --env prod --target staging)
+    # Pass source borg config for cross-env restores (e.g. --env prod --target staging).
+    # Strip the passphrase from --data (visible in process args) and pass it
+    # via subprocess environment instead.
+    extra_env = {}
     if restore_opts.get("source_borg_config"):
-        data["source_borg_config"] = json.dumps(restore_opts["source_borg_config"])
+        safe_config = {k: v for k, v in restore_opts["source_borg_config"].items()
+                       if k != "passphrase"}
+        data["source_borg_config"] = json.dumps(safe_config)
+        passphrase = restore_opts["source_borg_config"].get("passphrase", "")
+        if passphrase:
+            extra_env["DJAPLOY_SOURCE_BORG_PASSPHRASE"] = passphrase
     if restore_opts.get("source_repo_name"):
         data["source_repo_name"] = restore_opts["source_repo_name"]
     if restore_opts.get("source_media_path"):
         data["source_media_path"] = restore_opts["source_media_path"]
-    run_command({
+    ctx = {
         "command": "restore",
         "env": env_name,
         "restore_opts": restore_opts,
         "command_file": str(_get_command_file("restore")),
         "inventory_file": inventory_file,
         "pyinfra_data": data,
-    })
+    }
+    if extra_env:
+        ctx["extra_env"] = extra_env
+    run_command(ctx)
 
 
 def create_janitor_user(inventory_file: str, **kwargs):
@@ -439,13 +451,16 @@ def _create_version_tag(env_name: str, release_info: Dict[str, Any]):
 # pyinfra execution and inventory helpers
 # ------------------------------------------------------------------
 
-def _run_pyinfra(script_path: str, inventory_path: str, data: dict = None):
+def _run_pyinfra(script_path: str, inventory_path: str, data: dict = None,
+                 extra_env: dict = None):
     """Run pyinfra with the given command script and inventory."""
     import djaploy
     djaploy_path = Path(djaploy.__file__).parent
     django_pyinfra_path = djaploy_path / "bin" / "django_pyinfra.py"
 
     env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
 
     from django.conf import settings
     project_dir = str(settings.BASE_DIR)
