@@ -15,14 +15,19 @@ from typing import Optional
 from django.conf import settings
 
 
-def _validate_extra_file(extra_file: str, git_dir: Path) -> Path:
-    """Validate that an extra file path resolves inside the repository root."""
+def _validate_extra_file(extra_file: str, git_dir: Path) -> str:
+    """Validate and normalize an extra file path relative to the repo root.
+
+    Returns a clean relative path string (no '..' segments) safe for use
+    as a tar arcname or git path argument.
+    """
     resolved = (git_dir / extra_file).resolve()
-    if not resolved.is_relative_to(git_dir.resolve()):
+    repo_root = git_dir.resolve()
+    if not resolved.is_relative_to(repo_root):
         raise ValueError(
             f"Extra file path escapes repository: {extra_file}"
         )
-    return resolved
+    return str(resolved.relative_to(repo_root))
 
 
 def _get_git_dir() -> Path:
@@ -93,9 +98,9 @@ def _create_local_artifact(artifact_dir: Path, extra_files: list = None) -> Path
     file_list = [f for f in result.stdout.splitlines() if f.strip()]
 
     for extra_file in (extra_files or []):
-        _validate_extra_file(extra_file, git_dir)
-        if (git_dir / extra_file).exists() and extra_file not in file_list:
-            file_list.append(extra_file)
+        safe_path = _validate_extra_file(extra_file, git_dir)
+        if (git_dir / safe_path).exists() and safe_path not in file_list:
+            file_list.append(safe_path)
 
     import tarfile
     with tarfile.open(str(artifact_file), "w:gz") as tar:
@@ -150,9 +155,9 @@ def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = N
     if extra_files:
         print(f"[ARTIFACT] Adding {len(extra_files)} extra file(s) to archive")
         for extra_file in extra_files:
-            _validate_extra_file(extra_file, git_dir)
-            if (git_dir / extra_file).exists():
-                validated_extras.append(extra_file)
+            safe_path = _validate_extra_file(extra_file, git_dir)
+            if (git_dir / safe_path).exists():
+                validated_extras.append(safe_path)
             else:
                 print(f"[ARTIFACT] WARNING: File not found: {extra_file}")
 
@@ -189,9 +194,14 @@ def _create_git_artifact(artifact_dir: Path, git_ref: str, extra_files: list = N
             check=True, cwd=git_dir,
         )
 
-    with open(str(artifact_tar), 'rb') as f_in:
-        with gzip.open(str(artifact_file), 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-    os.remove(str(artifact_tar))
+    try:
+        with open(str(artifact_tar), 'rb') as f_in:
+            with gzip.open(str(artifact_file), 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+    finally:
+        try:
+            os.remove(str(artifact_tar))
+        except OSError:
+            pass
 
     return artifact_file

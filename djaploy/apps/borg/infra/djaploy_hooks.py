@@ -503,6 +503,10 @@ def restore_borg(host_data, restore_opts):
         return
 
     source_repo_name = restore_opts.get("source_repo_name", "")
+    if source_borg_config and not source_repo_name:
+        raise ValueError(
+            "source_repo_name is required when source_borg_config is provided"
+        )
     repo_name = (
         source_repo_name
         or getattr(host_data, 'name', 'unknown-host').replace(" ", "_").lower()
@@ -542,12 +546,14 @@ def restore_borg(host_data, restore_opts):
     repo_url = _build_repo_url(borg_config, repo_name)
     if source_borg_config:
         rsh_config = dict(borg_config)
-        target_known_hosts = (
-            target_bc.get("ssh_known_hosts_file", "")
-            if isinstance(target_bc, dict)
-            else getattr(target_bc, "ssh_known_hosts_file", "")
-        )
-        rsh_config["ssh_known_hosts_file"] = target_known_hosts
+        # ssh_key and ssh_known_hosts_file refer to files on the machine
+        # running borg — use the *target* host's values, not the source's.
+        for _key in ("ssh_key", "ssh_known_hosts_file"):
+            rsh_config[_key] = (
+                target_bc.get(_key, "")
+                if isinstance(target_bc, dict)
+                else getattr(target_bc, _key, "")
+            )
     else:
         rsh_config = borg_config
     borg_rsh = _build_borg_rsh(rsh_config)
