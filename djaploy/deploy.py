@@ -222,6 +222,30 @@ def rollback_project(inventory_file: str,
     })
 
 
+def activate_project(inventory_file: str, **kwargs):
+    """Activate the staged blue-green slot."""
+    env_name = Path(inventory_file).stem
+    run_command({
+        "command": "activate",
+        "env": env_name,
+        "command_file": str(_get_command_file("activate")),
+        "inventory_file": inventory_file,
+        "pyinfra_data": _build_pyinfra_data(env_name),
+    })
+
+
+def bluegreen_status(inventory_file: str, **kwargs):
+    """Show blue-green deployment status."""
+    env_name = Path(inventory_file).stem
+    run_command({
+        "command": "status",
+        "env": env_name,
+        "command_file": str(_get_command_file("status")),
+        "inventory_file": inventory_file,
+        "pyinfra_data": _build_pyinfra_data(env_name),
+    })
+
+
 # ------------------------------------------------------------------
 # Internal helpers (called by hooks in builtin_hooks.py)
 # ------------------------------------------------------------------

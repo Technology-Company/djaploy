@@ -8,12 +8,41 @@ Handles server configuration, application deployment, post-deploy tasks
 from djaploy.hooks import deploy_hook
 
 
+def _read_slot_info_from_remote(host, slot, state_file):
+    """Read a slot's deployment info from state.json on the remote server.
+
+    Uses host.run_shell_command (inside a python.call callback) to cat
+    the file and parse it locally.  Returns the slot dict or {}.
+    """
+    import json
+
+    sudo_password = getattr(host.data, '_sudo_password', None)
+    kwargs = {"command": f"cat {state_file}", "_sudo": True}
+    if sudo_password:
+        kwargs["_sudo_password"] = sudo_password
+
+    result = host.run_shell_command(**kwargs)
+    status = result[0]
+    output = result[1] if len(result) > 1 else None
+
+    if status and output:
+        try:
+            # pyinfra returns OutputLine objects with a .line attribute
+            lines = [l.line if hasattr(l, 'line') else str(l) for l in output]
+            raw = "\n".join(lines)
+            state_data = json.loads(raw)
+            return state_data.get("slots", {}).get(slot) or {}
+        except (json.JSONDecodeError, KeyError, AttributeError):
+            pass
+    return {}
+
+
 @deploy_hook("configure")
 def configure_server(host_data):
     """Configure basic server requirements: user, Python, Poetry, directories."""
     from pyinfra.operations import apt, server, pip, files
     from djaploy.infra.utils import (
-        is_zero_downtime, get_app_path, install_python,
+        is_zero_downtime, is_bluegreen, get_app_path, install_python,
         configure_http_challenge_sudo,
     )
     from pathlib import Path
@@ -98,8 +127,54 @@ def configure_server(host_data):
                 _sudo=True,
             )
 
+    # Set up blue-green directory structure
+    if is_bluegreen(host_data):
+        from djaploy.infra.bluegreen import init_state_cmd
+
+        app_path = get_app_path(host_data)
+        apps_dir = f"/home/{app_user}/apps"
+        for directory in [apps_dir, app_path]:
+            files.directory(
+                name=f"Create {directory}",
+                path=directory,
+                user=app_user,
+                group=app_user,
+                _sudo=True,
+            )
+
+        for subdir in ["slots", "slots/blue", "slots/green", "shared"]:
+            files.directory(
+                name=f"Create {subdir} directory",
+                path=f"{app_path}/{subdir}",
+                user=app_user,
+                group=app_user,
+                _sudo=True,
+            )
+
+        # Initialize state.json
+        state_file = f"{app_path}/state.json"
+        server.shell(
+            name="Initialize blue-green state file",
+            commands=[init_state_cmd(state_file)],
+            _sudo=True,
+            _sudo_user=app_user,
+        )
+
+        shared_resources = getattr(host_data, 'shared_resources', None) or []
+        if shared_resources:
+            mkdir_commands = [
+                f"mkdir -p {app_path}/shared/{resource}"
+                for resource in shared_resources
+            ]
+            mkdir_commands.append(f"chown -R {app_user}:{app_user} {app_path}/shared")
+            server.shell(
+                name="Create shared resource directories",
+                commands=mkdir_commands,
+                _sudo=True,
+            )
+
     # Set up zero-downtime directory structure
-    if is_zero_downtime(host_data):
+    elif is_zero_downtime(host_data):
         app_path = get_app_path(host_data)
         apps_dir = f"/home/{app_user}/apps"
         for directory in [apps_dir, app_path]:
@@ -140,7 +215,8 @@ def upload_artifact(host_data, artifact_path):
     """Upload artifact, extract, and symlink shared resources."""
     from pyinfra import host
     from pyinfra.operations import server, files
-    from djaploy.infra.utils import is_zero_downtime, get_app_path
+    from pyinfra.facts.server import Command
+    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
     from pathlib import Path
     from datetime import datetime
 
@@ -156,7 +232,94 @@ def upload_artifact(host_data, artifact_path):
         _sudo=False,
     )
 
-    if is_zero_downtime(host_data):
+    if is_bluegreen(host_data):
+        from djaploy.infra.bluegreen import read_active_slot_cmd
+
+        shared_path = f"{app_path}/shared"
+        state_file = f"{app_path}/state.json"
+
+        # Determine release name from artifact filename
+        parts = artifact_filename.rsplit('.tar.gz', 1)[0]
+        ref = parts.split('.', 1)[1] if '.' in parts else parts
+        if ref == "local":
+            ref = f"local-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        release_name = f"app-{ref}"
+
+        # Ensure slot directories and state.json exist (in case configure wasn't run)
+        from djaploy.infra.bluegreen import init_state_cmd
+        server.shell(
+            name="Ensure blue-green directories exist",
+            commands=[
+                f"mkdir -p {app_path}/slots/blue {app_path}/slots/green {app_path}/shared",
+                init_state_cmd(state_file),
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+        )
+
+        # Determine inactive slot by reading state.json
+        active_slot = host.get_fact(
+            Command,
+            read_active_slot_cmd(state_file),
+        )
+        active_slot = (active_slot or "").strip()
+        target_slot = "green" if active_slot == "blue" else "blue"
+        slot_path = f"{app_path}/slots/{target_slot}"
+
+        # Upload artifact
+        files.put(
+            name="Upload deployment artifact",
+            src=str(artifact_path),
+            dest=f"/home/{ssh_user}/tars/{artifact_filename}",
+        )
+
+        # Clear target slot and extract
+        server.shell(
+            name=f"Clear and extract artifact into {target_slot} slot",
+            commands=[
+                f"find {slot_path} -mindepth 1 -maxdepth 1 ! -name .venv -exec rm -rf {{}} +",
+                f"tar -C {slot_path} -xf /home/{ssh_user}/tars/{artifact_filename}",
+                f"chown -R {app_user}:{app_user} {slot_path}",
+            ],
+            _sudo=True,
+        )
+
+        # Symlink shared resources into the slot
+        shared_resources = getattr(host_data, 'shared_resources', None) or []
+        if shared_resources:
+            symlink_commands = []
+            for resource in shared_resources:
+                parent = str(Path(resource).parent)
+                if parent and parent != '.':
+                    symlink_commands.append(f"mkdir -p {slot_path}/{parent}")
+                symlink_commands.append(f"rm -rf {slot_path}/{resource}")
+                symlink_commands.append(
+                    f"ln -sfn {shared_path}/{resource} {slot_path}/{resource}"
+                )
+            server.shell(
+                name="Symlink shared resources into slot",
+                commands=symlink_commands,
+                _sudo=True,
+                _sudo_user=app_user,
+                _use_sudo_login=True,
+            )
+
+        # Create stable build symlink (used by configure and pre phases)
+        build_link = f"{app_path}/build"
+        server.shell(
+            name="Create stable build symlink to target slot",
+            commands=[f"ln -sfn {slot_path} {build_link}"],
+            _sudo=True,
+            _sudo_user=app_user,
+            _use_sudo_login=True,
+        )
+
+        # Store slot info for later phases
+        host.data._bluegreen_target_slot = target_slot
+        host.data._bluegreen_slot_path = slot_path
+        host.data._bluegreen_release_name = release_name
+
+    elif is_zero_downtime(host_data):
         releases_path = f"{app_path}/releases"
         shared_path = f"{app_path}/shared"
 
@@ -273,14 +436,14 @@ def upload_artifact(host_data, artifact_path):
 def configure_application(host_data, artifact_path):
     """Deploy config files, SSL certs, and install dependencies."""
     from djaploy.infra.utils import (
-        is_zero_downtime, get_app_path, deploy_config_files,
+        is_zero_downtime, is_bluegreen, get_app_path, deploy_config_files,
         generate_ssl_certificates, install_dependencies,
     )
 
     app_user = getattr(host_data, 'app_user', 'app')
     app_path = get_app_path(host_data)
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         target_path = f"{app_path}/build"
     else:
         target_path = app_path
@@ -311,7 +474,7 @@ def generate_local_settings(host_data, artifact_path):
     """
     import posixpath
     from pyinfra.operations import files
-    from djaploy.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
 
     if not getattr(host_data, "generate_local_settings", False):
         return
@@ -328,7 +491,7 @@ def generate_local_settings(host_data, artifact_path):
     manage_py_path = getattr(host_data, "manage_py_path", "manage.py")
     manage_subdir = posixpath.dirname(manage_py_path)
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         base_path = f"{app_path}/build"
     else:
         base_path = app_path
@@ -372,7 +535,7 @@ def generate_local_settings(host_data, artifact_path):
 
     lines.append("DEBUG = False\n")
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         shared_path = f"{app_path}/shared"
         lines.append(f'STATIC_ROOT = "{shared_path}/staticfiles"\n')
         lines.append(f'MEDIA_ROOT = "{shared_path}/media"\n')
@@ -401,7 +564,7 @@ def inject_local_settings(host_data, artifact_path):
     """Append hook-contributed local_settings to local.py."""
     import posixpath
     from pyinfra.operations import server
-    from djaploy.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
 
     local_settings_b64 = getattr(host_data, "local_settings_b64", None)
     if not local_settings_b64:
@@ -416,7 +579,7 @@ def inject_local_settings(host_data, artifact_path):
     manage_py_path = getattr(host_data, "manage_py_path", "manage.py")
     manage_subdir = posixpath.dirname(manage_py_path)
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         base_path = f"{app_path}/build"
     else:
         base_path = app_path
@@ -436,16 +599,82 @@ def inject_local_settings(host_data, artifact_path):
 
 @deploy_hook("deploy:pre")
 def activate_release(host_data, artifact_path):
-    """Run migrations, collectstatic, and swap symlink (zero-downtime)."""
+    """Run migrations, collectstatic, and swap symlink (zero-downtime) or
+    update state (bluegreen)."""
     from pyinfra import host
     from pyinfra.operations import server
     from djaploy.infra.utils import (
-        is_zero_downtime, get_app_path, run_migrations, collect_static,
+        is_zero_downtime, is_bluegreen, get_app_path,
+        run_migrations, collect_static, get_slot_socket_path,
     )
 
     app_user = getattr(host_data, 'app_user', 'app')
 
-    if is_zero_downtime(host_data):
+    if is_bluegreen(host_data):
+        base_path = get_app_path(host_data)
+        build_path = f"{base_path}/build"
+        app_name = getattr(host_data, 'app_name', None)
+        state_file = f"{base_path}/state.json"
+
+        target_slot = getattr(host.data, '_bluegreen_target_slot', 'blue')
+        slot_path = getattr(host.data, '_bluegreen_slot_path', f"{base_path}/slots/{target_slot}")
+        release_name = getattr(host.data, '_bluegreen_release_name', 'unknown')
+
+        run_migrations(app_user, build_path, host_data)
+        collect_static(app_user, build_path, host_data)
+
+        # Update state.json on the remote server
+        commit = getattr(host_data, 'commit', 'unknown')
+        socket_path = get_slot_socket_path(app_name, target_slot)
+        server.shell(
+            name="Update state.json with deployment info",
+            commands=[
+                f"python3 << 'PYEOF'\n"
+                f"import json, os, datetime\n"
+                f"venv_path = os.readlink('{slot_path}/.venv') if os.path.islink('{slot_path}/.venv') else 'unknown'\n"
+                f"python_path = venv_path + '/bin/python' if venv_path != 'unknown' else 'unknown'\n"
+                f"s = json.load(open('{state_file}'))\n"
+                f"s['slots']['{target_slot}'] = {{\n"
+                f"    'release': '{release_name}',\n"
+                f"    'commit': '{commit}',\n"
+                f"    'deployed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),\n"
+                f"    'python_interpreter': python_path,\n"
+                f"    'venv_path': venv_path,\n"
+                f"}}\n"
+                f"f = open('{state_file}.tmp', 'w')\n"
+                f"json.dump(s, f, indent=2)\n"
+                f"f.close()\n"
+                f"os.rename('{state_file}.tmp', '{state_file}')\n"
+                f"PYEOF"
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+        )
+
+        # Print deployment summary locally by reading state from remote
+        from pyinfra.operations import python as python_op
+
+        def _print_deploy_summary(state_f, t_slot, rel, sock):
+            info = _read_slot_info_from_remote(host, t_slot, state_f)
+
+            print(f"\n=== Blue-Green Deploy Summary ===")
+            print(f"  Slot:     {t_slot}")
+            print(f"  Release:  {rel}")
+            print(f"  Socket:   {sock}")
+            print(f"  Venv:     {info.get('venv_path', 'unknown')}")
+            print(f"  Python:   {info.get('python_interpreter', 'unknown')}")
+            print(f"\n  Status: staged (run 'djaploy activate' to switch traffic)\n")
+
+        python_op.call(
+            name="Print deployment summary",
+            function=_print_deploy_summary,
+            state_f=state_file,
+            t_slot=target_slot,
+            rel=release_name,
+            sock=socket_path,
+        )
+
+    elif is_zero_downtime(host_data):
         base_path = get_app_path(host_data)
         build_path = f"{base_path}/build"
         release_path = getattr(host.data, '_zero_downtime_release_path', None)
@@ -473,13 +702,74 @@ def activate_release(host_data, artifact_path):
 
 @deploy_hook("rollback")
 def rollback_release(host_data, release=None):
-    """Roll back to a previous release by swapping the current symlink."""
+    """Roll back to a previous release by swapping the current symlink,
+    or by switching the active blue-green slot."""
     import re
     from pyinfra.operations import server
-    from djaploy.infra.utils import get_app_path
+    from djaploy.infra.utils import is_bluegreen, get_app_path
 
     app_user = getattr(host_data, 'app_user', 'app')
     app_path = get_app_path(host_data)
+
+    if is_bluegreen(host_data):
+        from djaploy.infra.bluegreen import (
+            read_active_slot_cmd, set_active_slot_cmd, other_slot,
+        )
+        from djaploy.infra.utils import get_slot_socket_path
+        from io import StringIO
+        from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
+
+        app_name = getattr(host_data, 'app_name', None)
+        state_file = f"{app_path}/state.json"
+
+        # Read active slot and switch to the other one
+        server.shell(
+            name="Roll back blue-green: switch to other slot",
+            commands=[
+                # Read current active slot, compute target, verify it has a deployment
+                f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
+                f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
+                f'echo "Rolling back: switching from $ACTIVE to $TARGET"',
+            ],
+            _sudo=True,
+            _sudo_user=app_user,
+        )
+
+        # Update nginx upstream to the other slot and reload
+        # We render both variants and use a shell command to pick the right one
+        for target_slot in ("blue", "green"):
+            ctx = build_template_context(host_data)
+            ctx["active_slot"] = target_slot
+            from jinja2 import Environment
+            upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
+
+            server.shell(
+                name=f"Prepare nginx upstream for {target_slot}",
+                commands=[
+                    f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
+                    f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
+                    f'if [ "$TARGET" = "{target_slot}" ]; then '
+                    f"cat > /etc/nginx/sites-available/{app_name}-upstream.conf << 'NGINX_EOF'\n{upstream_content}NGINX_EOF\n"
+                    f'fi',
+                ],
+                _sudo=True,
+            )
+
+        server.shell(
+            name="Reload nginx and update state for rollback",
+            commands=[
+                f'nginx -t && nginx -s reload',
+                f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
+                f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
+                + set_active_slot_cmd(state_file, '" + "$TARGET" + "').replace(
+                    "'" + '"' + " + " + '"' + "$TARGET" + '"' + " + " + '"' + "'",
+                    "'\"$TARGET\"'"
+                ),
+            ],
+            _sudo=True,
+        )
+        return
+
     releases_path = f"{app_path}/releases"
 
     if release:
@@ -509,3 +799,143 @@ def rollback_release(host_data, release=None):
             _sudo=True,
             _sudo_user=app_user,
         )
+
+
+@deploy_hook("activate")
+def activate_bluegreen(host_data):
+    """Activate the staged blue-green slot by switching nginx upstream."""
+    from pyinfra import host
+    from pyinfra.operations import server
+    from pyinfra.facts.server import Command
+    from djaploy.infra.utils import (
+        is_bluegreen, get_app_path, get_slot_socket_path,
+    )
+    from djaploy.infra.bluegreen import (
+        read_active_slot_cmd, set_active_slot_cmd, other_slot,
+    )
+
+    if not is_bluegreen(host_data):
+        return
+
+    app_user = getattr(host_data, 'app_user', 'app')
+    app_name = getattr(host_data, 'app_name', None)
+    app_path = get_app_path(host_data)
+    state_file = f"{app_path}/state.json"
+
+    # Read current active slot
+    active_slot = host.get_fact(
+        Command,
+        read_active_slot_cmd(state_file),
+    )
+    active_slot = (active_slot or "").strip()
+    target_slot = other_slot(active_slot) if active_slot else "blue"
+
+    # Verify target slot has a deployment
+    has_deploy = host.get_fact(
+        Command,
+        f"python3 -c \""
+        f"import json; s=json.load(open('{state_file}')); "
+        f"print('yes' if s['slots'].get('{target_slot}') else 'no')"
+        f"\"",
+    )
+    if (has_deploy or "").strip() != "yes":
+        # Already on the latest slot — nothing to activate.
+        # Print a message but don't fail the command.
+        server.shell(
+            name="Nothing to activate",
+            commands=[
+                f'echo ""',
+                f'echo "Nothing to activate: slot {target_slot} has no deployment."',
+                f'echo "Current active slot: {active_slot or "none"}"',
+                f'echo "Run \'djaploy deploy\' first to stage a new version."',
+                f'echo ""',
+            ],
+            _sudo=True,
+        )
+        return
+
+    # Update nginx upstream config to point to target slot
+    from io import StringIO
+    from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
+    from jinja2 import Environment
+
+    ctx = build_template_context(host_data)
+    ctx["active_slot"] = target_slot
+    upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
+
+    nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+    if not nginx_cfg.get("custom"):
+        from pyinfra.operations import files
+        files.put(
+            name=f"Update nginx upstream to {target_slot} slot",
+            src=StringIO(upstream_content),
+            dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
+            _sudo=True,
+        )
+
+    # Reload nginx
+    server.shell(
+        name="Test and reload nginx",
+        commands=["nginx -t && nginx -s reload"],
+        _sudo=True,
+    )
+
+    # Update state.json on remote
+    prev_slot = active_slot or "none"
+    socket_path = get_slot_socket_path(app_name, target_slot)
+    server.shell(
+        name=f"Set active slot to {target_slot}",
+        commands=[set_active_slot_cmd(state_file, target_slot)],
+        _sudo=True,
+        _sudo_user=app_user,
+    )
+
+    # Print activation summary locally by reading state from remote
+    from pyinfra.operations import python as python_op
+
+    def _print_activate_summary(state_f, t_slot, p_slot, sock):
+        new_info = _read_slot_info_from_remote(host, t_slot, state_f)
+        old_info = _read_slot_info_from_remote(host, p_slot, state_f) if p_slot != "none" else {}
+
+        print(f"\n=== Blue-Green Activation ===")
+        print(f"  Switched:    {p_slot} -> {t_slot}")
+        print(f"  Socket:      {sock} (now serving production)")
+        print(f"  Deployed at: {new_info.get('deployed_at', 'unknown')}")
+
+        new_release = new_info.get('release', 'unknown')
+        old_release = old_info.get('release', 'unknown') if old_info else 'n/a'
+        print(f"  Release:     {old_release} -> {new_release}")
+
+        new_python = new_info.get('python_interpreter', 'unknown')
+        old_python = old_info.get('python_interpreter', 'unknown') if old_info else 'n/a'
+        if old_python == new_python:
+            print(f"  Python:      {new_python}")
+        else:
+            print(f"  Python:      {old_python} -> {new_python}")
+
+        new_venv = new_info.get('venv_path', 'unknown')
+        old_venv = old_info.get('venv_path', 'unknown') if old_info else 'n/a'
+        if old_venv == new_venv:
+            print(f"  Venv:        {new_venv}")
+        else:
+            print(f"  Venv:        {old_venv} -> {new_venv}")
+
+        print(f"\n  Previous slot ({p_slot}) is still running.")
+        print(f"  To rollback: manage.py djaploy rollback --env <env>\n")
+
+    python_op.call(
+        name="Print activation summary",
+        function=_print_activate_summary,
+        state_f=state_file,
+        t_slot=target_slot,
+        p_slot=prev_slot,
+        sock=socket_path,
+    )
+
+
+@deploy_hook("activate")
+def activate_bluegreen_status(host_data):
+    """Print full blue-green status during status command."""
+    # This hook is intentionally a no-op during activate —
+    # the main activate_bluegreen hook handles everything.
+    pass

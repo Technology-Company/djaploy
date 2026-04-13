@@ -44,6 +44,35 @@ RestartSec=5
 WantedBy=multi-user.target
 """
 
+SYSTEMD_BLUEGREEN = """\
+[Unit]
+Description={{ project_name }} Gunicorn Django App ({{ slot }})
+After=network.target
+
+[Service]
+Type=notify
+User={{ app_user }}
+Group={{ app_user }}
+RuntimeDirectory={{ project_name }}-{{ slot }}
+WorkingDirectory={{ slot_path }}{% if manage_subdir %}/{{ manage_subdir }}{% endif %}
+ExecStart={{ slot_path }}/.venv/bin/gunicorn \\
+    --workers {{ workers }} \\
+    --bind unix:/run/{{ project_name }}-{{ slot }}/{{ project_name }}.sock \\
+    --umask {{ umask }} \\
+    --access-logfile - \\
+    --error-logfile - \\
+    --timeout {{ timeout }} \\
+    {{ wsgi_module }}
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 SYSTEMD_IN_PLACE = """\
 [Unit]
 Description={{ project_name }} Gunicorn Django App
@@ -75,6 +104,12 @@ WantedBy=multi-user.target
 # ---------------------------------------------------------------------------
 # Nginx template
 # ---------------------------------------------------------------------------
+
+NGINX_UPSTREAM_BLUEGREEN = """\
+upstream {{ project_name }} {
+    server unix:/run/{{ project_name }}-{{ active_slot }}/{{ project_name }}.sock fail_timeout=0;
+}
+"""
 
 NGINX_SITE = """\
 upstream {{ project_name }} {
@@ -159,6 +194,81 @@ server {
 }
 """
 
+NGINX_SITE_BLUEGREEN = """\
+server {
+    listen {{ listen }};
+    server_name {{ server_name }};
+
+    client_max_body_size {{ client_max_body_size }};
+
+    location /static/ {
+        alias {{ static_path }}/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /media/ {
+        alias {{ media_path }}/;
+        expires 30d;
+    }
+
+    location / {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+        proxy_pass http://{{ project_name }};
+    }
+}
+"""
+
+NGINX_SITE_SSL_BLUEGREEN = """\
+server {
+    listen 443 ssl;
+    server_name {{ server_name }};
+
+    ssl_certificate {{ ssl_certificate }};
+    ssl_certificate_key {{ ssl_certificate_key }};
+
+    client_max_body_size {{ client_max_body_size }};
+
+    location /static/ {
+        alias {{ static_path }}/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location /media/ {
+        alias {{ media_path }}/;
+        expires 30d;
+    }
+
+    location / {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+        proxy_pass http://{{ project_name }};
+    }
+}
+
+server {
+    listen 80;
+    server_name {{ server_name }};
+
+    location /.well-known/acme-challenge/ {
+        alias /var/www/challenges/;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+"""
+
 
 # ---------------------------------------------------------------------------
 # Context builder
@@ -166,7 +276,7 @@ server {
 
 def build_template_context(host_data):
     """Build the full Jinja2 context dict from host_data."""
-    from djaploy.infra.utils import is_zero_downtime, get_app_path
+    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
     import posixpath
 
     app_user = getattr(host_data, 'app_user', 'app')
@@ -199,7 +309,7 @@ def build_template_context(host_data):
     if not wsgi_module:
         wsgi_module = f"{app_name}.wsgi:application"
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         static_path = f"{app_path}/shared/staticfiles"
         media_path = f"{app_path}/shared/media"
     else:
@@ -248,5 +358,14 @@ def build_template_context(host_data):
     if ssl_identifier:
         ctx["ssl_certificate"] = f"/home/{app_user}/.ssl/{ssl_identifier}.crt"
         ctx["ssl_certificate_key"] = f"/home/{app_user}/.ssl/{ssl_identifier}.key"
+
+    # Blue-green context
+    if is_bluegreen(host_data):
+        ctx["bluegreen"] = True
+        # active_slot is set dynamically by deploy_config_files / activate hooks;
+        # provide a placeholder here so the key exists in the context.
+        ctx["active_slot"] = "blue"
+    else:
+        ctx["bluegreen"] = False
 
     return ctx

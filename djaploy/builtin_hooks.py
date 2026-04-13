@@ -150,7 +150,7 @@ def _rollback_validate_strategy(context):
     _, data = hosts[0]
     strategy = (data.get("deployment_strategy") if isinstance(data, dict)
                 else getattr(data, "deployment_strategy", "zero_downtime"))
-    if strategy != "zero_downtime":
+    if strategy not in ("zero_downtime", "bluegreen"):
         raise ValueError(
-            "Rollback is only supported with deployment_strategy='zero_downtime'"
+            "Rollback is only supported with deployment_strategy='zero_downtime' or 'bluegreen'"
         )
