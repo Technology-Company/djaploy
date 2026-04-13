@@ -31,7 +31,8 @@ for phase in ("deploy:upload", "deploy:configure", "deploy:pre", "deploy:start")
         )
 
 # If --activate flag is set, run activation phases after deploy
-if getattr(host.data, "activate", None) == "true":
+_activate_val = getattr(host.data, "activate", None)
+if _activate_val in (True, "true", "True"):
     for phase in ("activate:pre", "activate", "activate:post"):
         for hook in registry.get_remote_hooks(phase):
             _deploy_decorator(hook.function.__name__)(hook.function)(
