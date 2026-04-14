@@ -712,61 +712,74 @@ def rollback_release(host_data, release=None):
     app_path = get_app_path(host_data)
 
     if is_bluegreen(host_data):
+        from pyinfra import host
+        from pyinfra.facts.server import Command
         from djaploy.infra.bluegreen import (
             read_active_slot_cmd, set_active_slot_cmd, other_slot,
         )
         from djaploy.infra.utils import get_slot_socket_path
         from io import StringIO
         from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
+        from jinja2 import Environment
 
         app_name = getattr(host_data, 'app_name', None)
         state_file = f"{app_path}/state.json"
 
-        # Read active slot and switch to the other one
+        # Read active slot and compute target
+        active_slot = host.get_fact(Command, read_active_slot_cmd(state_file))
+        active_slot = (active_slot or "").strip()
+        target_slot = other_slot(active_slot) if active_slot else "blue"
+
+        # Store for activate:post hooks (timers, streaming, custom nginx)
+        host.data._bluegreen_activated_slot = target_slot
+
+        # Update nginx upstream for non-custom setups
+        ctx = build_template_context(host_data)
+        ctx["active_slot"] = target_slot
+        upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
+
+        nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+        if not nginx_cfg.get("custom"):
+            from pyinfra.operations import files
+            files.put(
+                name=f"Update nginx upstream to {target_slot} slot",
+                src=StringIO(upstream_content),
+                dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
+                _sudo=True,
+            )
+
+        # Reload nginx
         server.shell(
-            name="Roll back blue-green: switch to other slot",
-            commands=[
-                # Read current active slot, compute target, verify it has a deployment
-                f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
-                f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
-                f'echo "Rolling back: switching from $ACTIVE to $TARGET"',
-            ],
+            name="Test and reload nginx for rollback",
+            commands=["nginx -t && nginx -s reload"],
+            _sudo=True,
+        )
+
+        # Update state.json
+        server.shell(
+            name=f"Set active slot to {target_slot} (rollback)",
+            commands=[set_active_slot_cmd(state_file, target_slot)],
             _sudo=True,
             _sudo_user=app_user,
         )
 
-        # Update nginx upstream to the other slot and reload
-        # We render both variants and use a shell command to pick the right one
-        for target_slot in ("blue", "green"):
-            ctx = build_template_context(host_data)
-            ctx["active_slot"] = target_slot
-            from jinja2 import Environment
-            upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
+        # Print summary
+        from pyinfra.operations import python as python_op
 
-            server.shell(
-                name=f"Prepare nginx upstream for {target_slot}",
-                commands=[
-                    f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
-                    f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
-                    f'if [ "$TARGET" = "{target_slot}" ]; then '
-                    f"cat > /etc/nginx/sites-available/{app_name}-upstream.conf << 'NGINX_EOF'\n{upstream_content}NGINX_EOF\n"
-                    f'fi',
-                ],
-                _sudo=True,
-            )
+        def _print_rollback_summary(state_f, t_slot, p_slot):
+            info = _read_slot_info_from_remote(host, t_slot, state_f)
+            print(f"\n=== Blue-Green Rollback ===")
+            print(f"  Switched:  {p_slot} -> {t_slot}")
+            print(f"  Release:   {info.get('release', 'unknown')}")
+            print(f"  Python:    {info.get('python_interpreter', 'unknown')}")
+            print()
 
-        server.shell(
-            name="Reload nginx and update state for rollback",
-            commands=[
-                f'nginx -t && nginx -s reload',
-                f'ACTIVE=$({read_active_slot_cmd(state_file)}) && '
-                f'if [ "$ACTIVE" = "blue" ]; then TARGET=green; else TARGET=blue; fi && '
-                + set_active_slot_cmd(state_file, '" + "$TARGET" + "').replace(
-                    "'" + '"' + " + " + '"' + "$TARGET" + '"' + " + " + '"' + "'",
-                    "'\"$TARGET\"'"
-                ),
-            ],
-            _sudo=True,
+        python_op.call(
+            name="Print rollback summary",
+            function=_print_rollback_summary,
+            state_f=state_file,
+            t_slot=target_slot,
+            p_slot=active_slot or "none",
         )
         return
 
@@ -822,37 +835,41 @@ def activate_bluegreen(host_data):
     app_path = get_app_path(host_data)
     state_file = f"{app_path}/state.json"
 
-    # Read current active slot
-    active_slot = host.get_fact(
-        Command,
-        read_active_slot_cmd(state_file),
-    )
-    active_slot = (active_slot or "").strip()
-    target_slot = other_slot(active_slot) if active_slot else "blue"
+    # If called from deploy --activate, the target slot is already known
+    # and we can skip the stale-fact verification.
+    deploy_target = getattr(host.data, '_bluegreen_target_slot', None)
+    if deploy_target:
+        # deploy --activate: we just deployed to this slot, activate it
+        active_slot_raw = host.get_fact(
+            Command,
+            read_active_slot_cmd(state_file),
+        )
+        active_slot = (active_slot_raw or "").strip()
+        target_slot = deploy_target
+    else:
+        # Standalone activate: read state and switch to the other slot
+        active_slot_raw = host.get_fact(
+            Command,
+            read_active_slot_cmd(state_file),
+        )
+        active_slot = (active_slot_raw or "").strip()
+        target_slot = other_slot(active_slot) if active_slot else "blue"
 
-    # Verify target slot has a deployment
-    has_deploy = host.get_fact(
-        Command,
-        f"python3 -c \""
-        f"import json; s=json.load(open('{state_file}')); "
-        f"print('yes' if s['slots'].get('{target_slot}') else 'no')"
-        f"\"",
-    )
-    if (has_deploy or "").strip() != "yes":
-        # Already on the latest slot — nothing to activate.
-        # Print a message but don't fail the command.
+        # Verify target slot has a deployment (use server.shell to avoid
+        # fact caching issues — the check runs at execution time, not plan time)
+        current_display = active_slot or "none"
         server.shell(
-            name="Nothing to activate",
+            name=f"Verify {target_slot} slot has a deployment",
             commands=[
-                f'echo ""',
-                f'echo "Nothing to activate: slot {target_slot} has no deployment."',
-                f'echo "Current active slot: {active_slot or "none"}"',
-                f'echo "Run \'djaploy deploy\' first to stage a new version."',
-                f'echo ""',
+                f"python3 -c \""
+                f"import json, sys; s=json.load(open('{state_file}')); "
+                f"sys.exit(0 if s['slots'].get('{target_slot}') else 1)"
+                f"\" || (echo 'Nothing to activate: slot {target_slot} has no deployment.' && "
+                f"echo 'Current active slot: {current_display}' && "
+                f"echo 'Run djaploy deploy first to stage a new version.' && exit 1)",
             ],
             _sudo=True,
         )
-        return
 
     # Store on host.data so activate:post hooks can read it
     host.data._bluegreen_activated_slot = target_slot
@@ -866,9 +883,11 @@ def activate_bluegreen(host_data):
     ctx["active_slot"] = target_slot
     upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
 
+    # Write the upstream config. Custom nginx setups (e.g. bostad) handle
+    # their own upstream file via activate:post hooks.
+    from pyinfra.operations import files
     nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
     if not nginx_cfg.get("custom"):
-        from pyinfra.operations import files
         files.put(
             name=f"Update nginx upstream to {target_slot} slot",
             src=StringIO(upstream_content),
