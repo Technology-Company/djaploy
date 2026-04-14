@@ -854,6 +854,9 @@ def activate_bluegreen(host_data):
         )
         return
 
+    # Store on host.data so activate:post hooks can read it
+    host.data._bluegreen_activated_slot = target_slot
+
     # Update nginx upstream config to point to target slot
     from io import StringIO
     from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
