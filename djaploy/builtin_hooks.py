@@ -103,6 +103,19 @@ def _deploy_calculate_release_info(context):
     if release_info:
         context["pyinfra_data"]["version"] = release_info["new_version"]
         context["pyinfra_data"]["commit"] = release_info["commit"]
+    elif "commit" not in context["pyinfra_data"]:
+        # Always pass commit hash even without versioning configured
+        try:
+            import subprocess
+            from django.conf import settings
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(settings.GIT_DIR),
+                text=True,
+            ).strip()
+            context["pyinfra_data"]["commit"] = commit
+        except Exception:
+            pass
 
 
 # ── deploy:postcommand ───────────────────────────────────────────────
