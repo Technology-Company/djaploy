@@ -64,8 +64,10 @@ if is_bluegreen(host.data):
             status_str = "unknown"
             if res[0] and len(res) > 1:
                 try:
-                    status_str = (list(res[1])[0].line if hasattr(list(res[1])[0], 'line') else str(list(res[1])[0])).strip()
-                except (IndexError, AttributeError):
+                    first_item = next(iter(res[1]), None)
+                    if first_item is not None:
+                        status_str = (first_item.line if hasattr(first_item, 'line') else str(first_item)).strip()
+                except (StopIteration, AttributeError):
                     pass
             print(f"Service {svc}: {status_str}")
         print()

@@ -114,8 +114,9 @@ def _deploy_calculate_release_info(context):
                 text=True,
             ).strip()
             context["pyinfra_data"]["commit"] = commit
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Failed to get commit hash: %s", e)
 
 
 # ── deploy:postcommand ───────────────────────────────────────────────

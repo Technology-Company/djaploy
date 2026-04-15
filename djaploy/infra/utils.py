@@ -526,8 +526,8 @@ def get_manage_py_path(host_data) -> str:
 def get_python_cmd(app_user: str, app_path: str, host_data) -> str:
     """Get the python command prefix for running management commands.
 
-    For zero-downtime deploys, uses the release's .venv/bin/python directly.
-    For in-place deploys, uses 'poetry run python'.
+    For zero-downtime and blue-green deploys, uses the release/slot's
+    .venv/bin/python directly.  For in-place deploys, uses 'poetry run python'.
     """
     if is_zero_downtime(host_data) or is_bluegreen(host_data):
         return f"{app_path}/.venv/bin/python"

@@ -217,6 +217,8 @@ class Command(BaseCommand):
 
         # Pass --activate flag for bluegreen deploy+activate in one step
         if options.get("activate"):
+            if command_name != "deploy":
+                raise CommandError("--activate is only valid with the 'deploy' command")
             context["activate"] = True
             context["pyinfra_data"]["activate"] = "true"
 

@@ -212,21 +212,22 @@ except ImportError:
 class TestBluegreenTemplateRender(unittest.TestCase):
     """Render blue-green templates with Jinja2 and verify output."""
 
-    SYSTEMD_CTX = dict(
-        project_name="myapp",
-        app_user="app",
-        slot="blue",
-        slot_path="/home/app/apps/myapp/slots/blue",
-        manage_subdir="",
-        workers=4,
-        timeout=30,
-        umask="002",
-        wsgi_module="myapp.wsgi:application",
-    )
+    def _base_ctx(self):
+        return dict(
+            project_name="myapp",
+            app_user="app",
+            slot="blue",
+            slot_path="/home/app/apps/myapp/slots/blue",
+            manage_subdir="",
+            workers=4,
+            timeout=30,
+            umask="002",
+            wsgi_module="myapp.wsgi:application",
+        )
 
     def _render(self, template_str, **overrides):
         from jinja2 import Environment
-        ctx = {**self.SYSTEMD_CTX, **overrides}
+        ctx = {**self._base_ctx(), **overrides}
         return Environment().from_string(template_str).render(**ctx)
 
     def test_systemd_renders_slot_in_socket_path(self):

@@ -227,6 +227,8 @@ python manage.py djaploy rollback --env production
 3. **Activate** -- rewrites nginx upstream to point to the new slot, reloads nginx
 4. **Rollback** (if needed) -- switches nginx back to the previous slot, which is still running
 
+> **Note:** Migrations run during Step 1, before traffic switches. Both the old and new slots share the same database, so migrations must be **backward-compatible** (use the expand/contract pattern). Deploy new code that handles both old and new schema, activate, then clean up in a subsequent deploy.
+
 ### Server directory layout comparison
 
 For `app_user="myapp-api"`, `app_name="myapp"`:

@@ -555,9 +555,9 @@ def restore_borg(host_data, restore_opts):
         )
         bluegreen_services = []
         for svc in services:
-            bluegreen_services.append(f"{app_name}-blue")
-            bluegreen_services.append(f"{app_name}-green")
-        # Also stop streaming coordinator instances
+            bluegreen_services.append(f"{svc}-blue")
+            bluegreen_services.append(f"{svc}-green")
+        # Also stop streaming coordinator instances (app-level, not per-service)
         bluegreen_services.append(f"{app_name}-streaming-blue")
         bluegreen_services.append(f"{app_name}-streaming-green")
         services = bluegreen_services

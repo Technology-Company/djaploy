@@ -35,8 +35,7 @@ def start_services(host_data, artifact_path):
             return
 
         for service in getattr(host_data, "services", []):
-            app_name = getattr(host_data, 'app_name', service)
-            slot_service = get_slot_service_name(app_name, target_slot)
+            slot_service = get_slot_service_name(service, target_slot)
 
             systemd.service(
                 name=f"Start and restart {slot_service} (target slot)",
@@ -46,6 +45,21 @@ def start_services(host_data, artifact_path):
                 restarted=True,
                 _sudo=True,
             )
+
+        # Disable legacy single service from zero_downtime/in_place if present.
+        # Runs after the new slot service is started so there's no downtime gap.
+        app_name = getattr(host_data, 'app_name', None)
+        from pyinfra.operations import server
+        server.shell(
+            name="Disable legacy service (migration to bluegreen)",
+            commands=[
+                f"systemctl stop {app_name}.service 2>/dev/null || true",
+                f"systemctl disable {app_name}.service 2>/dev/null || true",
+                f"rm -f /etc/systemd/system/{app_name}.service",
+                f"systemctl daemon-reload 2>/dev/null || true",
+            ],
+            _sudo=True,
+        )
     elif is_zero_downtime(host_data):
         for service in getattr(host_data, "services", []):
             systemd.service(

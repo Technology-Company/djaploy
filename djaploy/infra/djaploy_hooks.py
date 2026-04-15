@@ -8,6 +8,31 @@ Handles server configuration, application deployment, post-deploy tasks
 from djaploy.hooks import deploy_hook
 
 
+def _update_nginx_upstream(host_data, app_name, target_slot):
+    """Render and deploy the bluegreen nginx upstream config.
+
+    Skipped when nginx_conf.custom is set — custom setups handle
+    their own upstream via activate:post hooks.
+    """
+    from io import StringIO
+    from pyinfra.operations import files
+    from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
+    from jinja2 import Environment
+
+    ctx = build_template_context(host_data)
+    ctx["active_slot"] = target_slot
+    upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
+
+    nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+    if not nginx_cfg.get("custom"):
+        files.put(
+            name=f"Update nginx upstream to {target_slot} slot",
+            src=StringIO(upstream_content),
+            dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
+            _sudo=True,
+        )
+
+
 def _read_slot_info_from_remote(host, slot, state_file):
     """Read a slot's deployment info from state.json on the remote server.
 
@@ -28,7 +53,7 @@ def _read_slot_info_from_remote(host, slot, state_file):
     if status and output:
         try:
             # pyinfra returns OutputLine objects with a .line attribute
-            lines = [l.line if hasattr(l, 'line') else str(l) for l in output]
+            lines = [line.line if hasattr(line, 'line') else str(line) for line in output]
             raw = "\n".join(lines)
             state_data = json.loads(raw)
             return state_data.get("slots", {}).get(slot) or {}
@@ -657,13 +682,13 @@ def activate_release(host_data, artifact_path):
         def _print_deploy_summary(state_f, t_slot, rel, sock):
             info = _read_slot_info_from_remote(host, t_slot, state_f)
 
-            print(f"\n=== Blue-Green Deploy Summary ===")
+            print("\n=== Blue-Green Deploy Summary ===")
             print(f"  Slot:     {t_slot}")
             print(f"  Release:  {rel}")
             print(f"  Socket:   {sock}")
             print(f"  Venv:     {info.get('venv_path', 'unknown')}")
             print(f"  Python:   {info.get('python_interpreter', 'unknown')}")
-            print(f"\n  Status: staged (run 'djaploy activate' to switch traffic)\n")
+            print("\n  Status: staged (run 'djaploy activate' to switch traffic)\n")
 
         python_op.call(
             name="Print deployment summary",
@@ -734,19 +759,7 @@ def rollback_release(host_data, release=None):
         host.data._bluegreen_activated_slot = target_slot
 
         # Update nginx upstream for non-custom setups
-        ctx = build_template_context(host_data)
-        ctx["active_slot"] = target_slot
-        upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
-
-        nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
-        if not nginx_cfg.get("custom"):
-            from pyinfra.operations import files
-            files.put(
-                name=f"Update nginx upstream to {target_slot} slot",
-                src=StringIO(upstream_content),
-                dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
-                _sudo=True,
-            )
+        _update_nginx_upstream(host_data, app_name, target_slot)
 
         # Reload nginx
         server.shell(
@@ -768,7 +781,7 @@ def rollback_release(host_data, release=None):
 
         def _print_rollback_summary(state_f, t_slot, p_slot):
             info = _read_slot_info_from_remote(host, t_slot, state_f)
-            print(f"\n=== Blue-Green Rollback ===")
+            print("\n=== Blue-Green Rollback ===")
             print(f"  Switched:  {p_slot} -> {t_slot}")
             print(f"  Release:   {info.get('release', 'unknown')}")
             print(f"  Python:    {info.get('python_interpreter', 'unknown')}")
@@ -875,25 +888,7 @@ def activate_bluegreen(host_data):
     host.data._bluegreen_activated_slot = target_slot
 
     # Update nginx upstream config to point to target slot
-    from io import StringIO
-    from djaploy.infra.templates import NGINX_UPSTREAM_BLUEGREEN, build_template_context
-    from jinja2 import Environment
-
-    ctx = build_template_context(host_data)
-    ctx["active_slot"] = target_slot
-    upstream_content = Environment().from_string(NGINX_UPSTREAM_BLUEGREEN).render(**ctx)
-
-    # Write the upstream config. Custom nginx setups (e.g. bostad) handle
-    # their own upstream file via activate:post hooks.
-    from pyinfra.operations import files
-    nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
-    if not nginx_cfg.get("custom"):
-        files.put(
-            name=f"Update nginx upstream to {target_slot} slot",
-            src=StringIO(upstream_content),
-            dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
-            _sudo=True,
-        )
+    _update_nginx_upstream(host_data, app_name, target_slot)
 
     # Reload nginx
     server.shell(
@@ -919,7 +914,7 @@ def activate_bluegreen(host_data):
         new_info = _read_slot_info_from_remote(host, t_slot, state_f)
         old_info = _read_slot_info_from_remote(host, p_slot, state_f) if p_slot != "none" else {}
 
-        print(f"\n=== Blue-Green Activation ===")
+        print("\n=== Blue-Green Activation ===")
         print(f"  Switched:    {p_slot} -> {t_slot}")
         print(f"  Socket:      {sock} (now serving production)")
         print(f"  Deployed at: {new_info.get('deployed_at', 'unknown')}")
@@ -953,11 +948,3 @@ def activate_bluegreen(host_data):
         p_slot=prev_slot,
         sock=socket_path,
     )
-
-
-@deploy_hook("activate")
-def activate_bluegreen_status(host_data):
-    """Print full blue-green status during status command."""
-    # This hook is intentionally a no-op during activate —
-    # the main activate_bluegreen hook handles everything.
-    pass

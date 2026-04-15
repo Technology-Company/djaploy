@@ -63,21 +63,28 @@ def update_slot_info_cmd(
     python_interpreter: str,
     venv_path: str,
 ) -> str:
-    """Shell command to update a slot's deployment metadata in state.json."""
+    """Shell command to update a slot's deployment metadata in state.json.
+
+    Note: Production code uses heredocs instead of this function.
+    Kept for testing and as a utility.
+    """
+    # Serialize values safely to avoid injection
+    safe_vals = json.dumps({
+        "release": release,
+        "commit": commit,
+        "python_interpreter": python_interpreter,
+        "venv_path": venv_path,
+    })
     return (
         f"python3 -c \""
-        f"import json, datetime; "
+        f"import json, datetime, os; "
         f"s=json.load(open('{state_file}')); "
-        f"s['slots']['{slot}']={{"
-        f"'release':'{release}',"
-        f"'commit':'{commit}',"
-        f"'deployed_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),"
-        f"'python_interpreter':'{python_interpreter}',"
-        f"'venv_path':'{venv_path}'"
-        f"}}; "
+        f"vals={safe_vals}; "
+        f"vals['deployed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); "
+        f"s['slots']['{slot}']=vals; "
         f"f=open('{state_file}.tmp','w'); "
         f"json.dump(s,f,indent=2); f.close(); "
-        f"import os; os.rename('{state_file}.tmp','{state_file}')"
+        f"os.rename('{state_file}.tmp','{state_file}')"
         f"\""
     )
 
@@ -120,26 +127,3 @@ def print_slot_info_cmd(state_file: str, slot: str) -> str:
     )
 
 
-def print_status_cmd(state_file: str, app_name: str) -> str:
-    """Shell command that prints full blue-green status."""
-    return (
-        f"python3 -c \""
-        f"import json; "
-        f"s=json.load(open('{state_file}')); "
-        f"active=s.get('active_slot') or 'none'; "
-        f"print(); "
-        f"print('Blue-Green Status for {app_name}'); "
-        f"print('=' * 40); "
-        f"print(f'Active slot: {{active}}'); "
-        f"print(); "
-        f"for slot in ('blue','green'): "
-        f"  info=s['slots'].get(slot); "
-        f"  tag='ACTIVE' if active==slot else 'inactive'; "
-        f"  print(f'{{slot.upper()}} ({{tag}}):'); "
-        f"  ["
-        f"    (print(f'  Release:  {{info[k]}}') for k in ('release','commit','deployed_at','python_interpreter','venv_path'))"
-        f"    if info else print('  (empty)')"
-        f"  ]; "
-        f"  print()"
-        f"\""
-    )
