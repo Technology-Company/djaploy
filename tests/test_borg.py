@@ -245,6 +245,36 @@ class TestBorgBackupScriptGeneration(unittest.TestCase):
         self.assertIn('MEDIA_DIR="/home/app/apps/myapp/media"', script)
         self.assertNotIn("/shared/media", script)
 
+    def test_script_default_media_path_bluegreen(self):
+        """Bluegreen deploys use shared/media by default (same as zero_downtime)."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = None
+        host_data.deployment_strategy = "bluegreen"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('MEDIA_DIR="/home/app/apps/myapp/shared/media"', script)
+
+    def test_script_default_db_path_bluegreen(self):
+        """Bluegreen db_path defaults to host db_dir or /home/{user}/dbs."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = "/home/app/dbs/myapp"
+        host_data.deployment_strategy = "bluegreen"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertIn('DB_DIR="/home/app/dbs/myapp"', script)
+
+    def test_script_default_media_path_bluegreen_in_place(self):
+        """Bluegreen should NOT use the in_place media path."""
+        config = {"passphrase": "s", "repo_host": ""}
+        host_data = MagicMock()
+        host_data.app_name = "myapp"
+        host_data.db_dir = None
+        host_data.deployment_strategy = "bluegreen"
+        script = self._generate(config, app_user="app", host_data=host_data)
+        self.assertNotIn('MEDIA_DIR="/home/app/apps/myapp/media"', script)
+
     def test_script_explicit_media_path_overrides_strategy(self):
         """Explicit media_path overrides the strategy-derived default."""
         config = {"passphrase": "s", "repo_host": "", "media_path": "/custom/media"}
