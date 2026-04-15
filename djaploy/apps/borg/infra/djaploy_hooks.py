@@ -146,7 +146,7 @@ def _generate_backup_script(borg_config, app_user: str, repo_name: str,
         if not isinstance(host_data, dict)
         else host_data.get('deployment_strategy', 'zero_downtime')
     )
-    if deployment_strategy == 'zero_downtime':
+    if deployment_strategy in ('zero_downtime', 'bluegreen'):
         default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
     else:
         default_media = f"/home/{app_user}/apps/{app_name}/media"
@@ -527,7 +527,7 @@ def restore_borg(host_data, restore_opts):
         if not isinstance(host_data, dict)
         else host_data.get('deployment_strategy', 'zero_downtime')
     )
-    if deployment_strategy == 'zero_downtime':
+    if deployment_strategy in ('zero_downtime', 'bluegreen'):
         default_media = f"/home/{app_user}/apps/{app_name}/shared/media"
     else:
         default_media = f"/home/{app_user}/apps/{app_name}/media"
@@ -539,6 +539,28 @@ def restore_borg(host_data, restore_opts):
     archive = restore_opts.get("archive", "latest")
     db_only = restore_opts.get("db_only", False)
     services = getattr(host_data, "services", None) or []
+
+    # For bluegreen, expand service names to per-slot services and include
+    # per-slot streaming services so they are also stopped during restore.
+    deployment_strategy = (
+        getattr(host_data, 'deployment_strategy', 'zero_downtime')
+        if not isinstance(host_data, dict)
+        else host_data.get('deployment_strategy', 'zero_downtime')
+    )
+    if deployment_strategy == 'bluegreen':
+        app_name = (
+            getattr(host_data, 'app_name', '')
+            if not isinstance(host_data, dict)
+            else host_data.get('app_name', '')
+        )
+        bluegreen_services = []
+        for svc in services:
+            bluegreen_services.append(f"{app_name}-blue")
+            bluegreen_services.append(f"{app_name}-green")
+        # Also stop streaming coordinator instances
+        bluegreen_services.append(f"{app_name}-streaming-blue")
+        bluegreen_services.append(f"{app_name}-streaming-green")
+        services = bluegreen_services
 
     # Repo connection details come from the *source* borg config, but
     # ssh_known_hosts_file must come from the *target* (the file lives on
