@@ -772,6 +772,26 @@ def rollback_release(host_data, release=None):
             _sudo=True,
         )
 
+        # Health check: verify the target slot is running before rolling back.
+        # Retries up to 3 times with 2s delay.
+        socket_path = get_slot_socket_path(app_name, target_slot)
+        server.shell(
+            name=f"Health check: verify {target_slot} slot is healthy for rollback",
+            commands=[
+                f"for attempt in 1 2 3; do "
+                f"HTTP_CODE=$(curl -o /dev/null -w '%{{http_code}}' --max-time 5 --unix-socket {socket_path} http://localhost/ 2>/dev/null); "
+                f"if [ \"$HTTP_CODE\" != \"000\" ]; then "
+                f"echo \"Health check passed: {target_slot} slot responding (HTTP $HTTP_CODE)\"; exit 0; fi; "
+                f"echo \"Health check attempt $attempt/3: no response, retrying in 2s...\"; "
+                f"sleep 2; "
+                f"done; "
+                f"echo 'ROLLBACK ABORTED: {target_slot} slot is not responding on {socket_path}' && "
+                f"echo 'Check: systemctl status {app_name}-{target_slot}.service' && "
+                f"exit 1",
+            ],
+            _sudo=True,
+        )
+
         # Store for activate:post hooks (timers, streaming, custom nginx)
         host.data._bluegreen_activated_slot = target_slot
 
@@ -925,20 +945,22 @@ def activate_bluegreen(host_data):
             _sudo=True,
         )
 
-    # Extra gunicorn-specific check: verify the socket is responding
+    # Extra gunicorn-specific check: verify the socket accepts HTTP requests.
+    # Retries up to 3 times with 2s delay to allow freshly started gunicorn to boot.
     socket_path = get_slot_socket_path(app_name, target_slot)
     server.shell(
         name=f"Health check: verify {target_slot} gunicorn socket responds",
         commands=[
-            f"if curl -sf --max-time 5 --unix-socket {socket_path} http://localhost/ > /dev/null 2>&1; then "
-            f"echo 'Health check passed: gunicorn socket is responding'; "
-            f"elif [ -S {socket_path} ]; then "
-            f"echo 'Health check: socket exists, HTTP may be non-200 (proceeding)'; "
-            f"else "
-            f"echo 'ACTIVATION ABORTED: gunicorn socket not responding.' && "
-            f"echo 'Socket: {socket_path}' && "
-            f"exit 1; "
-            f"fi",
+            f"for attempt in 1 2 3 4 5; do "
+            f"HTTP_CODE=$(curl -o /dev/null -w '%{{http_code}}' --max-time 5 --unix-socket {socket_path} http://localhost/ 2>/dev/null); "
+            f"if [ \"$HTTP_CODE\" != \"000\" ]; then "
+            f"echo \"Health check passed: gunicorn responding (HTTP $HTTP_CODE)\"; exit 0; fi; "
+            f"echo \"Health check attempt $attempt/5: no response, retrying in 3s...\"; "
+            f"sleep 3; "
+            f"done; "
+            f"echo 'ACTIVATION ABORTED: gunicorn not responding on {socket_path}' && "
+            f"echo 'Check: systemctl status {app_name}-{target_slot}.service' && "
+            f"exit 1",
         ],
         _sudo=True,
     )
