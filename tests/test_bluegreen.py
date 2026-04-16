@@ -527,7 +527,7 @@ class TestBluegreenHealthCheck(unittest.TestCase):
         )
 
         # Must curl the correct socket
-        self.assertIn(f"--unix-socket /run/testapp-green/testapp.sock", cmd)
+        self.assertIn("--unix-socket /run/testapp-green/testapp.sock", cmd)
         # Must check the correct service on fallback
         self.assertIn("systemctl is-active testapp-green.service", cmd)
         # Must abort with exit 1 on failure

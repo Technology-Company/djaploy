@@ -760,6 +760,18 @@ def rollback_release(host_data, release=None):
         active_slot = (active_slot or "").strip()
         target_slot = other_slot(active_slot) if active_slot else "blue"
 
+        # Verify the target slot has a deployment before switching
+        server.shell(
+            name=f"Verify {target_slot} slot has a deployment for rollback",
+            commands=[
+                f"python3 -c \""
+                f"import json, sys; s=json.load(open('{state_file}')); "
+                f"sys.exit(0 if s['slots'].get('{target_slot}') else 1)"
+                f"\" || (echo 'ROLLBACK ABORTED: slot {target_slot} has no deployment.' && exit 1)",
+            ],
+            _sudo=True,
+        )
+
         # Store for activate:post hooks (timers, streaming, custom nginx)
         host.data._bluegreen_activated_slot = target_slot
 
@@ -981,7 +993,7 @@ def activate_bluegreen(host_data):
             print(f"  Venv:        {old_venv} -> {new_venv}")
 
         print(f"\n  Previous slot ({p_slot}) is still running.")
-        print(f"  To rollback: manage.py djaploy rollback --env <env>\n")
+        print("  To rollback: manage.py djaploy rollback --env <env>\n")
 
     python_op.call(
         name="Print activation summary",

@@ -40,13 +40,13 @@ def start_services(host_data, artifact_path):
 
             # Only start if the service unit file exists — custom services
             # (e.g. streaming) may be rendered by project hooks, not djaploy core.
+            # Uses if/else so enable/restart failures still surface as errors.
             server.shell(
                 name=f"Start {slot_service} if unit exists",
                 commands=[
-                    f"test -f /etc/systemd/system/{slot_service}.service && "
-                    f"systemctl enable {slot_service} && "
-                    f"systemctl restart {slot_service} || "
-                    f"echo 'Unit {slot_service}.service not found, skipping'",
+                    f"if [ -f /etc/systemd/system/{slot_service}.service ]; then "
+                    f"systemctl enable {slot_service} && systemctl restart {slot_service}; "
+                    f"else echo 'Unit {slot_service}.service not found, skipping'; fi",
                 ],
                 _sudo=True,
             )
@@ -61,7 +61,7 @@ def start_services(host_data, artifact_path):
                 f"systemctl stop {app_name}.service 2>/dev/null || true",
                 f"systemctl disable {app_name}.service 2>/dev/null || true",
                 f"rm -f /etc/systemd/system/{app_name}.service",
-                f"systemctl daemon-reload 2>/dev/null || true",
+                "systemctl daemon-reload 2>/dev/null || true",
             ],
             _sudo=True,
         )
