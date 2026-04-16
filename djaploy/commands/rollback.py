@@ -24,3 +24,13 @@ for hook in registry.get_remote_hooks("rollback"):
     _deploy_decorator(hook.function.__name__)(hook.function)(
         host.data, release
     )
+
+# For bluegreen rollback, run activate:post hooks to update
+# custom nginx upstream, timers, etc.
+from djaploy.infra.utils import is_bluegreen
+if is_bluegreen(host.data):
+    for phase in ("activate:post",):
+        for hook in registry.get_remote_hooks(phase):
+            _deploy_decorator(hook.function.__name__)(hook.function)(
+                host.data
+            )

@@ -11,6 +11,33 @@ def is_zero_downtime(host_data) -> bool:
     return getattr(host_data, 'deployment_strategy', 'zero_downtime') == 'zero_downtime'
 
 
+def is_bluegreen(host_data) -> bool:
+    return getattr(host_data, 'deployment_strategy', 'zero_downtime') == 'bluegreen'
+
+
+def get_bluegreen_paths(host_data) -> dict:
+    """Return all blue-green path components."""
+    app_path = get_app_path(host_data)
+    return {
+        "app_path": app_path,
+        "slots_path": f"{app_path}/slots",
+        "blue_path": f"{app_path}/slots/blue",
+        "green_path": f"{app_path}/slots/green",
+        "shared_path": f"{app_path}/shared",
+        "state_file": f"{app_path}/state.json",
+    }
+
+
+def get_slot_socket_path(app_name: str, slot: str) -> str:
+    """Return the Unix socket path for a given slot."""
+    return f"/run/{app_name}-{slot}/{app_name}.sock"
+
+
+def get_slot_service_name(app_name: str, slot: str) -> str:
+    """Return the systemd service name for a given slot."""
+    return f"{app_name}-{slot}"
+
+
 def get_app_path(host_data) -> str:
     app_user = getattr(host_data, 'app_user', 'app')
     app_name = getattr(host_data, 'app_name', None)
@@ -123,7 +150,10 @@ def deploy_config_files(host_data, app_path: str):
     from io import StringIO
     from pyinfra.operations import files
     from djaploy.infra.templates import (
-        SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, NGINX_SITE, NGINX_SITE_SSL,
+        SYSTEMD_ZERO_DOWNTIME, SYSTEMD_IN_PLACE, SYSTEMD_BLUEGREEN,
+        NGINX_SITE, NGINX_SITE_SSL,
+        NGINX_SITE_BLUEGREEN, NGINX_SITE_SSL_BLUEGREEN,
+        NGINX_UPSTREAM_BLUEGREEN,
         build_template_context,
     )
 
@@ -133,37 +163,95 @@ def deploy_config_files(host_data, app_path: str):
     ctx = build_template_context(host_data)
 
     # Select systemd template based on deployment strategy
-    if is_zero_downtime(host_data):
-        systemd_tpl = SYSTEMD_ZERO_DOWNTIME
+    if is_bluegreen(host_data):
+        # Deploy a service file for each slot
+        for slot in ("blue", "green"):
+            slot_ctx = dict(ctx)
+            slot_ctx["slot"] = slot
+            slot_ctx["slot_path"] = f"{get_app_path(host_data)}/slots/{slot}"
+            service_name = get_slot_service_name(app_name, slot)
+            files.template(
+                name=f"Render {service_name} systemd service",
+                src=StringIO(SYSTEMD_BLUEGREEN),
+                dest=f"/etc/systemd/system/{service_name}.service",
+                _sudo=True,
+                **slot_ctx,
+            )
+    elif is_zero_downtime(host_data):
+        files.template(
+            name=f"Render {app_name} systemd service",
+            src=StringIO(SYSTEMD_ZERO_DOWNTIME),
+            dest=f"/etc/systemd/system/{app_name}.service",
+            _sudo=True,
+            **ctx,
+        )
     else:
-        systemd_tpl = SYSTEMD_IN_PLACE
-
-    files.template(
-        name=f"Render {app_name} systemd service",
-        src=StringIO(systemd_tpl),
-        dest=f"/etc/systemd/system/{app_name}.service",
-        _sudo=True,
-        **ctx,
-    )
+        files.template(
+            name=f"Render {app_name} systemd service",
+            src=StringIO(SYSTEMD_IN_PLACE),
+            dest=f"/etc/systemd/system/{app_name}.service",
+            _sudo=True,
+            **ctx,
+        )
 
     # Skip built-in nginx template when a custom nginx module handles it
     # (e.g. bostad's nginx_sites.py with multi-domain SSL from 1Password).
     # Set nginx_conf={"custom": True} on HostConfig to skip.
     nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
     if not nginx_cfg.get("custom"):
-        # Select nginx template: SSL when domains with certs are configured
-        if "ssl_certificate" in ctx:
-            nginx_tpl = NGINX_SITE_SSL
+        if is_bluegreen(host_data):
+            # Deploy upstream as a separate file (rewritten during activation).
+            # Point to the currently active slot so deploy doesn't disrupt
+            # production traffic. On first deploy (no active slot yet), point
+            # to the target slot so nginx has a valid upstream after reload.
+            from pyinfra import host as _host
+            from pyinfra.facts.server import Command as _Command
+            from djaploy.infra.bluegreen import read_active_slot_cmd
+            bg_paths = get_bluegreen_paths(host_data)
+            current_active = _host.get_fact(
+                _Command, read_active_slot_cmd(bg_paths["state_file"]),
+            )
+            current_active = (current_active or "").strip()
+            if current_active:
+                # Keep upstream pointing to the currently active slot
+                upstream_ctx = dict(ctx, active_slot=current_active)
+            else:
+                # First deploy: point to the target slot being deployed
+                target = getattr(_host.data, '_bluegreen_target_slot', 'blue')
+                upstream_ctx = dict(ctx, active_slot=target)
+            files.template(
+                name=f"Render {app_name} nginx upstream config",
+                src=StringIO(NGINX_UPSTREAM_BLUEGREEN),
+                dest=f"/etc/nginx/sites-available/{app_name}-upstream.conf",
+                _sudo=True,
+                **upstream_ctx,
+            )
+            # Deploy site config without inline upstream
+            if "ssl_certificate" in ctx:
+                nginx_tpl = NGINX_SITE_SSL_BLUEGREEN
+            else:
+                nginx_tpl = NGINX_SITE_BLUEGREEN
+            files.template(
+                name=f"Render {app_name} nginx site config",
+                src=StringIO(nginx_tpl),
+                dest=f"/etc/nginx/sites-available/{app_name}",
+                _sudo=True,
+                **ctx,
+            )
         else:
-            nginx_tpl = NGINX_SITE
+            # Select nginx template: SSL when domains with certs are configured
+            if "ssl_certificate" in ctx:
+                nginx_tpl = NGINX_SITE_SSL
+            else:
+                nginx_tpl = NGINX_SITE
 
-        files.template(
-            name=f"Render {app_name} nginx config",
-            src=StringIO(nginx_tpl),
-            dest=f"/etc/nginx/sites-available/{app_name}",
-            _sudo=True,
-            **ctx,
-        )
+            files.template(
+                name=f"Render {app_name} nginx config",
+                src=StringIO(nginx_tpl),
+                dest=f"/etc/nginx/sites-available/{app_name}",
+                _sudo=True,
+                **ctx,
+            )
 
 
 def install_dependencies(app_user: str, app_path: str, host_data):
@@ -191,16 +279,15 @@ def install_dependencies(app_user: str, app_path: str, host_data):
     poetry_lock_enabled = core_config.get("poetry_lock", False)
     poetry_lock_args = core_config.get("poetry_lock_args", None)
 
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         # Hash poetry.lock + python version to create/reuse shared venvs.
-        # Each release gets a .venv symlink pointing to the shared venv,
+        # Each release/slot gets a .venv symlink pointing to the shared venv,
         # so current/.venv/bin/... always resolves correctly.
         app_name = getattr(host_data, 'app_name', None)
         if not app_name:
             raise ValueError("app_name must be set on HostConfig")
         base_path = f"/home/{app_user}/apps/{app_name}"
         shared_path = f"{base_path}/shared"
-        releases_path = f"{base_path}/releases"
 
         commands = []
 
@@ -223,7 +310,7 @@ def install_dependencies(app_user: str, app_path: str, host_data):
             f'test -f poetry.lock || {home_prefix} {poetry_bin} lock'
         )
 
-        # Compute lock hash, create shared venv if missing, symlink into release.
+        # Compute lock hash, create shared venv if missing, symlink into release/slot.
         # If the shared venv already exists, just symlink — no install needed.
         # NOTE: use $VAR not ${VAR} — pyinfra interprets {…} as format placeholders.
         commands.append(
@@ -235,7 +322,9 @@ def install_dependencies(app_user: str, app_path: str, host_data):
             f'ln -sfn "$VENV_DIR" .venv && '
             f'{home_prefix} POETRY_VIRTUALENVS_IN_PROJECT=true {poetry_cmd} && '
             # Rewrite shebangs to the absolute venv python path so that
-            # gunicornherder's pre_exec hook can read them on USR2 re-exec.
+            # gunicornherder's pre_exec hook can read them on USR2 re-exec
+            # (zero_downtime) and gunicorn's ExecStart resolves correctly
+            # (bluegreen).
             # INVARIANT: when the venv is reused (else branch below), the
             # shebangs already contain the correct $VENV_DIR path from when
             # the venv was first created — no rewrite needed on reuse.
@@ -248,17 +337,31 @@ def install_dependencies(app_user: str, app_path: str, host_data):
             f'fi'
         )
 
-        # Clean up shared venvs no longer referenced by any release
-        commands.append(
-            f'for v in {shared_path}/venv-*-py*; do '
-            f'[ -d "$v" ] || continue; '
-            f'USED=false; '
-            f'for r in {releases_path}/*/; do '
-            f'[ "$(readlink "$r.venv" 2>/dev/null)" = "$v" ] && USED=true && break; '
-            f'done; '
-            f'$USED || rm -rf "$v"; '
-            f'done'
-        )
+        # Clean up shared venvs no longer referenced by any release/slot
+        if is_bluegreen(host_data):
+            slots_path = f"{base_path}/slots"
+            commands.append(
+                f'for v in {shared_path}/venv-*-py*; do '
+                f'[ -d "$v" ] || continue; '
+                f'USED=false; '
+                f'for s in {slots_path}/blue {slots_path}/green; do '
+                f'[ "$(readlink "$s/.venv" 2>/dev/null)" = "$v" ] && USED=true && break; '
+                f'done; '
+                f'$USED || rm -rf "$v"; '
+                f'done'
+            )
+        else:
+            releases_path = f"{base_path}/releases"
+            commands.append(
+                f'for v in {shared_path}/venv-*-py*; do '
+                f'[ -d "$v" ] || continue; '
+                f'USED=false; '
+                f'for r in {releases_path}/*/; do '
+                f'[ "$(readlink "$r.venv" 2>/dev/null)" = "$v" ] && USED=true && break; '
+                f'done; '
+                f'$USED || rm -rf "$v"; '
+                f'done'
+            )
 
         # NOTE: _use_sudo_login=False here — sudo -i re-parses command
         # strings through the login shell, which breaks && chains and
@@ -348,7 +451,7 @@ def collect_static(app_user: str, app_path: str, host_data):
         return
 
     python_cmd = get_python_cmd(app_user, app_path, host_data)
-    clear_flag = "" if is_zero_downtime(host_data) else " --clear"
+    clear_flag = "" if (is_zero_downtime(host_data) or is_bluegreen(host_data)) else " --clear"
     server.shell(
         name="Collect static files",
         commands=[
@@ -423,10 +526,10 @@ def get_manage_py_path(host_data) -> str:
 def get_python_cmd(app_user: str, app_path: str, host_data) -> str:
     """Get the python command prefix for running management commands.
 
-    For zero-downtime deploys, uses the release's .venv/bin/python directly.
-    For in-place deploys, uses 'poetry run python'.
+    For zero-downtime and blue-green deploys, uses the release/slot's
+    .venv/bin/python directly.  For in-place deploys, uses 'poetry run python'.
     """
-    if is_zero_downtime(host_data):
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
         return f"{app_path}/.venv/bin/python"
     return f"/home/{app_user}/.local/bin/poetry run python"
 

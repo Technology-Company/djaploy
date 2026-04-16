@@ -142,6 +142,12 @@ class Command(BaseCommand):
             help="Skip running prepare.py script",
         )
 
+        parser.add_argument(
+            "--activate",
+            action="store_true",
+            help="Activate the slot immediately after deploy (bluegreen only)",
+        )
+
     def handle(self, *args, **options):
         if options["list_commands"]:
             return self._list_commands()
@@ -208,6 +214,13 @@ class Command(BaseCommand):
         # Pass release through to pyinfra for commands that need it
         if options.get("release"):
             context["pyinfra_data"]["release"] = options["release"]
+
+        # Pass --activate flag for bluegreen deploy+activate in one step
+        if options.get("activate"):
+            if command_name != "deploy":
+                raise CommandError("--activate is only valid with the 'deploy' command")
+            context["activate"] = True
+            context["pyinfra_data"]["activate"] = "true"
 
         if options["dry_run"]:
             self.stdout.write(f"Command: {command_name}")

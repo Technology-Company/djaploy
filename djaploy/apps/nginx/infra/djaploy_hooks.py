@@ -34,6 +34,7 @@ def configure_nginx(host_data):
 def deploy_nginx(host_data, artifact_path):
     """Deploy NGINX configuration files and SSL certificates."""
     from pyinfra.operations import server, files
+    from djaploy.infra.utils import is_bluegreen
 
     server.shell(
         name="Clear default NGINX sites",
@@ -79,6 +80,18 @@ def deploy_nginx(host_data, artifact_path):
             ],
             _sudo=True,
         )
+
+        # For bluegreen, also enable the upstream config
+        if is_bluegreen(host_data):
+            server.shell(
+                name=f"Enable {app_name} NGINX upstream config",
+                commands=[
+                    f"test -f /etc/nginx/sites-available/{app_name}-upstream.conf && "
+                    f"ln -fs /etc/nginx/sites-available/{app_name}-upstream.conf "
+                    f"/etc/nginx/sites-enabled/{app_name}-upstream.conf || true",
+                ],
+                _sudo=True,
+            )
 
 
 @deploy_hook("deploy:start")

@@ -29,3 +29,14 @@ for phase in ("deploy:upload", "deploy:configure", "deploy:pre", "deploy:start")
         _deploy_decorator(hook.function.__name__)(hook.function)(
             host.data, artifact_path
         )
+
+# If --activate flag is set, run activation phases after deploy
+_activate_val = getattr(host.data, "activate", None)
+if _activate_val in (True, "true", "True"):
+    for phase in ("activate:pre", "activate", "activate:post"):
+        _hooks = registry.get_remote_hooks(phase)
+        print(f"[activate] phase={phase} hooks={[h.function.__name__ for h in _hooks]}")
+        for hook in _hooks:
+            _deploy_decorator(hook.function.__name__)(hook.function)(
+                host.data
+            )

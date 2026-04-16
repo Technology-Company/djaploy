@@ -213,10 +213,10 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
 
         # Validate deployment_strategy
         strategy = config.get("deployment_strategy", "zero_downtime")
-        if strategy not in ("in_place", "zero_downtime"):
+        if strategy not in ("in_place", "zero_downtime", "bluegreen"):
             raise ValueError(
                 f"Invalid deployment_strategy: {strategy!r}. "
-                f"Must be 'in_place' or 'zero_downtime'"
+                f"Must be 'in_place', 'zero_downtime', or 'bluegreen'"
             )
 
         # Expand SSH key path if provided

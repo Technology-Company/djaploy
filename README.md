@@ -174,6 +174,109 @@ Deployment flow:
 7. Collects static files
 8. Restarts services
 
+## Deployment Strategies
+
+djaploy supports three deployment strategies, configured via `deployment_strategy` on `HostConfig`.
+
+### In-place (`"in_place"`)
+
+The simplest strategy. Code is extracted directly into the app directory and services are restarted. Has brief downtime during restart.
+
+### Zero-downtime (`"zero_downtime"`)
+
+Uses a `releases/` directory with a `current` symlink. Each deploy creates a new immutable release, swaps the symlink atomically, and sends USR2 via gunicornherder to reload gunicorn. No downtime, but no pre-activation testing.
+
+### Blue-green (`"bluegreen"`)
+
+Two independent slots (blue and green), each running its own gunicorn process on a separate Unix socket. Traffic switching happens via nginx reload. Supports staging a release for testing before switching.
+
+```python
+HostConfig(
+    "my-server",
+    ssh_hostname="192.168.1.100",
+    app_name="myapp",
+    app_user="myapp-api",
+    deployment_strategy="bluegreen",
+    # ...
+)
+```
+
+#### Blue-green commands
+
+```bash
+# Deploy to inactive slot (does NOT switch traffic)
+python manage.py djaploy deploy --env production --latest
+
+# Activate: switch nginx to the staged slot (zero downtime)
+python manage.py djaploy activate --env production
+
+# Deploy + activate in one step
+python manage.py djaploy deploy --env production --latest --activate
+
+# Show both slots with release info, paths, service status
+python manage.py djaploy status --env production
+
+# Rollback: switch back to previous slot (instant)
+python manage.py djaploy rollback --env production
+```
+
+#### Blue-green deployment flow
+
+1. **Deploy** -- extracts artifact to inactive slot, installs dependencies, runs migrations, starts the slot's gunicorn service
+2. **Test** -- the staged slot is running and reachable via its socket (e.g. `curl --unix-socket /run/myapp-green/myapp.sock http://localhost/health/`)
+3. **Activate** -- rewrites nginx upstream to point to the new slot, reloads nginx
+4. **Rollback** (if needed) -- switches nginx back to the previous slot, which is still running
+
+> **Note:** Migrations run during Step 1, before traffic switches. Both the old and new slots share the same database, so migrations must be **backward-compatible** (use the expand/contract pattern). Deploy new code that handles both old and new schema, activate, then clean up in a subsequent deploy.
+
+### Server directory layout comparison
+
+For `app_user="myapp-api"`, `app_name="myapp"`:
+
+| Path | `in_place` | `zero_downtime` | `bluegreen` |
+|------|-----------|-----------------|-------------|
+| App code | `.../apps/myapp/` | `.../apps/myapp/current/` | `.../apps/myapp/slots/{blue\|green}/` |
+| Virtualenv | Managed by Poetry | `.../shared/venv-{HASH}-py{ver}/` | `.../shared/venv-{HASH}-py{ver}/` |
+| Static files | `.../apps/myapp/staticfiles/` | `.../apps/myapp/shared/staticfiles/` | `.../apps/myapp/shared/staticfiles/` |
+| Media files | `.../apps/myapp/media/` | `.../apps/myapp/shared/media/` | `.../apps/myapp/shared/media/` |
+| Database | via `db_dir` | via `db_dir` | via `db_dir` |
+
+All paths are relative to `/home/{app_user}/`.
+
+#### Shared directory (`zero_downtime` and `bluegreen`)
+
+Both strategies use a `shared/` directory for resources that persist across deployments:
+
+| Content | Purpose |
+|---------|---------|
+| `venv-{HASH}-py{version}/` | Virtualenvs keyed by `poetry.lock` hash. Reused when dependencies haven't changed. |
+| `staticfiles/` | Output of `collectstatic`. Served by nginx. |
+| `media/` | User-uploaded files. Served by nginx. |
+| Custom paths via `shared_resources` | Project-specific shared directories (e.g. `bostad/public`). |
+
+#### Systemd services comparison
+
+| Strategy | Service name | Socket path | Process |
+|----------|-------------|-------------|---------|
+| `in_place` | `{app}.service` | `/run/{app}/{app}.sock` | `poetry run gunicorn` |
+| `zero_downtime` | `{app}.service` | `/run/{app}/{app}.sock` | gunicornherder wrapping gunicorn |
+| `bluegreen` | `{app}-blue.service`, `{app}-green.service` | `/run/{app}-blue/{app}.sock`, `/run/{app}-green/{app}.sock` | Plain gunicorn (`Type=notify`) |
+
+Blue-green uses `Type=notify` -- gunicorn has native systemd-notify support, so systemd knows when the process is ready without needing gunicornherder.
+
+#### Nginx configuration (bluegreen)
+
+Blue-green deploys the nginx upstream as a separate include file so it can be rewritten during activation without touching the site config:
+
+- Site config: `/etc/nginx/sites-available/{app_name}` (no inline upstream block)
+- Upstream config: `/etc/nginx/sites-available/{app_name}-upstream.conf`
+
+Activation rewrites the upstream file to point to the new slot's socket and reloads nginx.
+
+#### State tracking (bluegreen)
+
+Blue-green maintains a `state.json` file at `/home/{app_user}/apps/{app_name}/state.json` that tracks the active slot and deployment metadata (release name, commit, venv path, python interpreter) for each slot. This is printed during deploy, activate, and status commands.
+
 ### Certificate management
 
 ```bash
