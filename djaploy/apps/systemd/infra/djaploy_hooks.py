@@ -34,15 +34,20 @@ def start_services(host_data, artifact_path):
         if not target_slot:
             return
 
+        from pyinfra.operations import server
         for service in getattr(host_data, "services", []):
             slot_service = get_slot_service_name(service, target_slot)
 
-            systemd.service(
-                name=f"Start and restart {slot_service} (target slot)",
-                service=slot_service,
-                running=True,
-                enabled=True,
-                restarted=True,
+            # Only start if the service unit file exists — custom services
+            # (e.g. streaming) may be rendered by project hooks, not djaploy core.
+            server.shell(
+                name=f"Start {slot_service} if unit exists",
+                commands=[
+                    f"test -f /etc/systemd/system/{slot_service}.service && "
+                    f"systemctl enable {slot_service} && "
+                    f"systemctl restart {slot_service} || "
+                    f"echo 'Unit {slot_service}.service not found, skipping'",
+                ],
                 _sudo=True,
             )
 

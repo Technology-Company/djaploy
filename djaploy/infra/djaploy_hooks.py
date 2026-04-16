@@ -648,8 +648,13 @@ def activate_release(host_data, artifact_path):
         run_migrations(app_user, build_path, host_data)
         collect_static(app_user, build_path, host_data)
 
-        # Update state.json on the remote server
+        # Update state.json on the remote server.
+        # Serialize release_name and commit with json.dumps to safely
+        # handle quotes and special characters in branch names / messages.
+        import json as _json
         commit = getattr(host_data, 'commit', 'unknown')
+        safe_release = _json.dumps(release_name)
+        safe_commit = _json.dumps(commit)
         socket_path = get_slot_socket_path(app_name, target_slot)
         server.shell(
             name="Update state.json with deployment info",
@@ -660,8 +665,8 @@ def activate_release(host_data, artifact_path):
                 f"python_path = venv_path + '/bin/python' if venv_path != 'unknown' else 'unknown'\n"
                 f"s = json.load(open('{state_file}'))\n"
                 f"s['slots']['{target_slot}'] = {{\n"
-                f"    'release': '{release_name}',\n"
-                f"    'commit': '{commit}',\n"
+                f"    'release': {safe_release},\n"
+                f"    'commit': {safe_commit},\n"
                 f"    'deployed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),\n"
                 f"    'python_interpreter': python_path,\n"
                 f"    'venv_path': venv_path,\n"
@@ -835,6 +840,7 @@ def activate_bluegreen(host_data):
     from pyinfra.facts.server import Command
     from djaploy.infra.utils import (
         is_bluegreen, get_app_path, get_slot_socket_path,
+        get_slot_service_name,
     )
     from djaploy.infra.bluegreen import (
         read_active_slot_cmd, set_active_slot_cmd, other_slot,
@@ -887,6 +893,44 @@ def activate_bluegreen(host_data):
     # Store on host.data so activate:post hooks can read it
     host.data._bluegreen_activated_slot = target_slot
 
+    # Health check: verify all target slot services are running before
+    # switching nginx. Abort activation if any service is down.
+    services = getattr(host_data, "services", []) or []
+    failed_checks = []
+    for svc in services:
+        slot_svc = get_slot_service_name(svc, target_slot)
+        server.shell(
+            name=f"Health check: verify {slot_svc} is active",
+            commands=[
+                f"if systemctl is-active {slot_svc}.service > /dev/null 2>&1; then "
+                f"echo 'Health check passed: {slot_svc} is active'; "
+                f"else "
+                f"echo 'ACTIVATION ABORTED: {slot_svc} is not running.' && "
+                f"echo 'Check: systemctl status {slot_svc}.service' && "
+                f"exit 1; "
+                f"fi",
+            ],
+            _sudo=True,
+        )
+
+    # Extra gunicorn-specific check: verify the socket is responding
+    socket_path = get_slot_socket_path(app_name, target_slot)
+    server.shell(
+        name=f"Health check: verify {target_slot} gunicorn socket responds",
+        commands=[
+            f"if curl -sf --max-time 5 --unix-socket {socket_path} http://localhost/ > /dev/null 2>&1; then "
+            f"echo 'Health check passed: gunicorn socket is responding'; "
+            f"elif [ -S {socket_path} ]; then "
+            f"echo 'Health check: socket exists, HTTP may be non-200 (proceeding)'; "
+            f"else "
+            f"echo 'ACTIVATION ABORTED: gunicorn socket not responding.' && "
+            f"echo 'Socket: {socket_path}' && "
+            f"exit 1; "
+            f"fi",
+        ],
+        _sudo=True,
+    )
+
     # Update nginx upstream config to point to target slot
     _update_nginx_upstream(host_data, app_name, target_slot)
 
@@ -899,7 +943,6 @@ def activate_bluegreen(host_data):
 
     # Update state.json on remote
     prev_slot = active_slot or "none"
-    socket_path = get_slot_socket_path(app_name, target_slot)
     server.shell(
         name=f"Set active slot to {target_slot}",
         commands=[set_active_slot_cmd(state_file, target_slot)],

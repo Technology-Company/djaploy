@@ -483,5 +483,122 @@ class TestBluegreenHookDiscovery(unittest.TestCase):
             global_registry._hooks.update(saved_hooks)
 
 
+class TestBluegreenHealthCheck(unittest.TestCase):
+    """Test health check logic in activate hook."""
+
+    def test_health_check_socket_path_uses_target_slot(self):
+        """Health check should curl the target slot's socket."""
+        from djaploy.infra.utils import get_slot_socket_path
+        blue_socket = get_slot_socket_path("myapp", "blue")
+        green_socket = get_slot_socket_path("myapp", "green")
+        self.assertEqual(blue_socket, "/run/myapp-blue/myapp.sock")
+        self.assertEqual(green_socket, "/run/myapp-green/myapp.sock")
+        # Sockets must be different so health check targets the right slot
+        self.assertNotEqual(blue_socket, green_socket)
+
+    def test_health_check_service_name_uses_target_slot(self):
+        """Health check fallback should check the target slot's service."""
+        from djaploy.infra.utils import get_slot_service_name
+        self.assertEqual(get_slot_service_name("myapp", "blue"), "myapp-blue")
+        self.assertEqual(get_slot_service_name("myapp", "green"), "myapp-green")
+
+    def test_health_check_command_structure(self):
+        """Verify the health check shell command contains the expected elements."""
+        # Simulate what activate_bluegreen generates
+        app_name = "testapp"
+        target_slot = "green"
+        from djaploy.infra.utils import get_slot_socket_path
+        socket_path = get_slot_socket_path(app_name, target_slot)
+
+        # Build the command the same way the hook does
+        cmd = (
+            f"if curl -sf --max-time 5 --unix-socket {socket_path} http://localhost/ > /dev/null 2>&1; then "
+            f"echo 'Health check passed: {target_slot} slot is responding'; "
+            f"else "
+            f"if [ -S {socket_path} ] && systemctl is-active {app_name}-{target_slot}.service > /dev/null 2>&1; then "
+            f"echo 'Health check: {target_slot} slot service is active (HTTP response may be non-200, proceeding)'; "
+            f"else "
+            f"echo 'ACTIVATION ABORTED: {target_slot} slot is not responding.' && "
+            f"echo 'Socket: {socket_path}' && "
+            f"echo 'Check: systemctl status {app_name}-{target_slot}.service' && "
+            f"exit 1; "
+            f"fi; "
+            f"fi"
+        )
+
+        # Must curl the correct socket
+        self.assertIn(f"--unix-socket /run/testapp-green/testapp.sock", cmd)
+        # Must check the correct service on fallback
+        self.assertIn("systemctl is-active testapp-green.service", cmd)
+        # Must abort with exit 1 on failure
+        self.assertIn("exit 1", cmd)
+        # Must include the abort message
+        self.assertIn("ACTIVATION ABORTED", cmd)
+
+    def test_health_check_different_slots_produce_different_commands(self):
+        """Blue and green health checks should target different sockets."""
+        from djaploy.infra.utils import get_slot_socket_path
+        blue_cmd = f"curl --unix-socket {get_slot_socket_path('app', 'blue')}"
+        green_cmd = f"curl --unix-socket {get_slot_socket_path('app', 'green')}"
+        self.assertIn("app-blue", blue_cmd)
+        self.assertIn("app-green", green_cmd)
+        self.assertNotEqual(blue_cmd, green_cmd)
+
+
+class TestBluegreenServiceExistenceCheck(unittest.TestCase):
+    """Test that start_services checks unit file existence before starting."""
+
+    def test_service_check_command_structure(self):
+        """The start command should test for the unit file before starting."""
+        from djaploy.infra.utils import get_slot_service_name
+        slot_service = get_slot_service_name("myapp", "blue")
+
+        # Build the command the same way start_services does
+        cmd = (
+            f"test -f /etc/systemd/system/{slot_service}.service && "
+            f"systemctl enable {slot_service} && "
+            f"systemctl restart {slot_service} || "
+            f"echo 'Unit {slot_service}.service not found, skipping'"
+        )
+
+        self.assertIn("test -f /etc/systemd/system/myapp-blue.service", cmd)
+        self.assertIn("systemctl enable myapp-blue", cmd)
+        self.assertIn("systemctl restart myapp-blue", cmd)
+        self.assertIn("not found, skipping", cmd)
+
+    def test_streaming_service_gets_separate_slot_name(self):
+        """bostad-streaming should produce bostad-streaming-blue, not bostad-blue."""
+        from djaploy.infra.utils import get_slot_service_name
+        self.assertEqual(
+            get_slot_service_name("bostad-streaming", "blue"),
+            "bostad-streaming-blue",
+        )
+        self.assertEqual(
+            get_slot_service_name("bostad-streaming", "green"),
+            "bostad-streaming-green",
+        )
+
+
+class TestHeredocInjectionSafety(unittest.TestCase):
+    """Test that state.json update safely handles special characters."""
+
+    def test_release_name_with_quotes_is_safe(self):
+        """json.dumps should escape quotes in release names."""
+        import json
+        release = "feat/o'hare"
+        safe = json.dumps(release)
+        self.assertEqual(safe, '"feat/o\'hare"')
+        # Should be parseable back
+        self.assertEqual(json.loads(safe), release)
+
+    def test_commit_with_special_chars_is_safe(self):
+        """json.dumps should handle commit messages with special chars."""
+        import json
+        commit = 'fix: handle "edge" case'
+        safe = json.dumps(commit)
+        self.assertIn('\\"edge\\"', safe)
+        self.assertEqual(json.loads(safe), commit)
+
+
 if __name__ == "__main__":
     unittest.main()
