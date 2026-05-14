@@ -6,8 +6,39 @@ All deployment configuration lives on HostConfig.  Project-level settings
 """
 
 import typing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import List, Dict, Any, Optional
+
+
+def _unwrap_op_secrets(value):
+    """Recursively replace ``OpSecret`` instances with their resolved strings.
+
+    ``OpSecret.resolve_all()`` must be called before this walker so all
+    values are present in the resolution cache.  Returns a new container
+    when an ``OpSecret`` is found nested inside; plain values are returned
+    unchanged.
+    """
+    from .certificates import OpSecret
+
+    if isinstance(value, OpSecret):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _unwrap_op_secrets(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unwrap_op_secrets(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_unwrap_op_secrets(item) for item in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        changes = {}
+        for f in fields(value):
+            field_value = getattr(value, f.name)
+            new_value = _unwrap_op_secrets(field_value)
+            if new_value is not field_value:
+                changes[f.name] = new_value
+        if changes:
+            return replace(value, **changes)
+        return value
+    return value
 
 
 class HostConfigMetaclass(type):
@@ -210,6 +241,18 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
         # Add any extra kwargs
         for key in kwargs:
             config[key] = kwargs[key]
+
+        # Batch-resolve any OpSecret values (including ones nested in
+        # dicts/lists/dataclasses) in a single ``op inject`` call, then
+        # replace OpSecret instances with their resolved strings.  Allows
+        # callers to pass ``OpSecret(...)`` directly instead of
+        # ``str(OpSecret(...))`` and avoids one subprocess per secret.
+        try:
+            from .certificates import OpSecret
+            OpSecret.resolve_all()
+            config = _unwrap_op_secrets(config)
+        except ImportError:
+            pass
 
         # Validate deployment_strategy
         strategy = config.get("deployment_strategy", "zero_downtime")

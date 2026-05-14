@@ -2,8 +2,161 @@
 
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from djaploy.config import HostConfig
+
+
+class TestHostConfigOpSecret(unittest.TestCase):
+    """HostConfig should accept lazy OpSecret values and batch-resolve them."""
+
+    def setUp(self):
+        from djaploy.certificates import OpSecret
+        OpSecret._secret_mapping.clear()
+        OpSecret._secret_values.clear()
+
+    def tearDown(self):
+        from djaploy.certificates import OpSecret
+        OpSecret._secret_mapping.clear()
+        OpSecret._secret_values.clear()
+
+    @staticmethod
+    def _mock_resolver(fake_values):
+        """Returns (side_effect, call_log) for patching OpSecret._map_secrets.
+
+        Each invocation appends the snapshot of currently-pending references
+        to ``call_log``, so callers can assert batching behavior.
+        """
+        from djaploy.certificates import OpSecret
+        call_log = []
+
+        def _resolve():
+            pending = [
+                k for k in OpSecret._secret_mapping
+                if k not in OpSecret._secret_values
+            ]
+            call_log.append(pending)
+            for k in pending:
+                OpSecret._secret_values[k] = fake_values.get(k, "")
+
+        return _resolve, call_log
+
+    def test_opsecret_kwarg_resolves_to_string(self):
+        from djaploy.certificates import OpSecret
+
+        resolver, _ = self._mock_resolver({
+            "/v/i/username": "alice",
+            "/v/i/password": "p@ss",
+        })
+
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            host = HostConfig(
+                "server",
+                ssh_hostname="1.2.3.4",
+                app_name="myapp",
+                ovipro_username=OpSecret("/v/i/username"),
+                ovipro_password=OpSecret("/v/i/password"),
+            )
+
+        _, data = host
+        self.assertEqual(data["ovipro_username"], "alice")
+        self.assertEqual(data["ovipro_password"], "p@ss")
+        self.assertIs(type(data["ovipro_username"]), str)
+        self.assertIs(type(data["ovipro_password"]), str)
+
+    def test_batched_single_resolve_call(self):
+        from djaploy.certificates import OpSecret
+
+        resolver, call_log = self._mock_resolver({
+            "/v/i/a": "1", "/v/i/b": "2", "/v/i/c": "3",
+        })
+
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            HostConfig(
+                "server",
+                ssh_hostname="1.2.3.4",
+                app_name="myapp",
+                a=OpSecret("/v/i/a"),
+                b=OpSecret("/v/i/b"),
+                c=OpSecret("/v/i/c"),
+            )
+
+        self.assertEqual(len(call_log), 1, "All secrets must batch into one op inject")
+        self.assertEqual(sorted(call_log[0]), ["/v/i/a", "/v/i/b", "/v/i/c"])
+
+    def test_opsecret_in_nested_dict_resolves(self):
+        from djaploy.certificates import OpSecret
+
+        resolver, _ = self._mock_resolver({
+            "/v/i/webhook": "https://hooks.example.com/abc",
+        })
+
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            host = HostConfig(
+                "server",
+                ssh_hostname="1.2.3.4",
+                app_name="myapp",
+                notifications_conf={
+                    "webhook_url": OpSecret("/v/i/webhook"),
+                    "display_name": "MyApp",
+                },
+            )
+
+        _, data = host
+        self.assertEqual(data["notifications_conf"]["webhook_url"],
+                         "https://hooks.example.com/abc")
+        self.assertEqual(data["notifications_conf"]["display_name"], "MyApp")
+        self.assertIs(type(data["notifications_conf"]["webhook_url"]), str)
+
+    def test_opsecret_in_dataclass_resolves(self):
+        """OpSecret nested in a dataclass field (BorgBackupConfig) resolves."""
+        from djaploy.config import BorgBackupConfig
+        from djaploy.certificates import OpSecret
+
+        resolver, _ = self._mock_resolver({
+            "/v/i/passphrase": "borg-secret",
+        })
+
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            host = HostConfig(
+                "server",
+                ssh_hostname="1.2.3.4",
+                app_name="myapp",
+                borg_backup=BorgBackupConfig(
+                    passphrase=OpSecret("/v/i/passphrase"),
+                ),
+            )
+
+        _, data = host
+        self.assertEqual(data["borg_backup"].passphrase, "borg-secret")
+        self.assertIs(type(data["borg_backup"].passphrase), str)
+
+    def test_legacy_str_wrapped_opsecret_still_works(self):
+        """The existing ``str(OpSecret(...))`` pattern continues to work."""
+        from djaploy.certificates import OpSecret
+
+        resolver, _ = self._mock_resolver({"/v/i/u": "alice"})
+
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            host = HostConfig(
+                "server",
+                ssh_hostname="1.2.3.4",
+                app_name="myapp",
+                ovipro_username=str(OpSecret("/v/i/u")),
+            )
+
+        _, data = host
+        self.assertEqual(data["ovipro_username"], "alice")
+
+    def test_no_opsecrets_means_no_resolve_call(self):
+        """A HostConfig without OpSecret values must not invoke ``op inject``."""
+        from djaploy.certificates import OpSecret
+
+        resolver, call_log = self._mock_resolver({})
+        with mock.patch.object(OpSecret, "_map_secrets", side_effect=resolver):
+            HostConfig("server", ssh_hostname="1.2.3.4", app_name="myapp")
+
+        self.assertEqual(call_log, [])
 
 
 class TestHostConfig(unittest.TestCase):
