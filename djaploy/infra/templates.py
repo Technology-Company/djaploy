@@ -276,7 +276,9 @@ server {
 
 def build_template_context(host_data):
     """Build the full Jinja2 context dict from host_data."""
-    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
+    from djaploy.infra.utils import (
+        is_zero_downtime, is_bluegreen, get_app_path, get_static_media_paths,
+    )
     import posixpath
 
     app_user = getattr(host_data, 'app_user', 'app')
@@ -309,12 +311,7 @@ def build_template_context(host_data):
     if not wsgi_module:
         wsgi_module = f"{app_name}.wsgi:application"
 
-    if is_zero_downtime(host_data) or is_bluegreen(host_data):
-        static_path = f"{app_path}/shared/staticfiles"
-        media_path = f"{app_path}/shared/media"
-    else:
-        static_path = f"{app_path}/staticfiles"
-        media_path = f"{app_path}/media"
+    static_path, media_path = get_static_media_paths(host_data)
 
     # Derive SSL cert paths from domains if available
     domains = getattr(host_data, 'domains', None) or []

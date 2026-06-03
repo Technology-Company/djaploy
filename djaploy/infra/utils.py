@@ -46,6 +46,36 @@ def get_app_path(host_data) -> str:
     return f"/home/{app_user}/apps/{app_name}"
 
 
+def get_static_media_paths(host_data):
+    """Return ``(static_path, media_path)`` for nginx and local settings.
+
+    Honors optional ``nginx_conf`` overrides ``static_path`` / ``media_path``.
+    Each may be absolute (leading ``/``) or relative to the app path; when not
+    set, falls back to the strategy's conventional location
+    (``{app_path}/static`` + ``{app_path}/media`` for in_place,
+    ``{app_path}/shared/...`` for zero_downtime/bluegreen).
+    """
+    app_path = get_app_path(host_data)
+    nginx_cfg = getattr(host_data, 'nginx_conf', None) or {}
+
+    if is_zero_downtime(host_data) or is_bluegreen(host_data):
+        default_static = f"{app_path}/shared/static"
+        default_media = f"{app_path}/shared/media"
+    else:
+        default_static = f"{app_path}/static"
+        default_media = f"{app_path}/media"
+
+    def _resolve(value, default):
+        if not value:
+            return default
+        return value if value.startswith("/") else f"{app_path}/{value}"
+
+    return (
+        _resolve(nginx_cfg.get("static_path"), default_static),
+        _resolve(nginx_cfg.get("media_path"), default_media),
+    )
+
+
 def get_core_config(host_data) -> dict:
     return getattr(host_data, 'core_conf', None) or {}
 

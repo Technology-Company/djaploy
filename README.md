@@ -9,24 +9,21 @@ A modular Django deployment system based on [pyinfra](https://pyinfra.com/), des
 
 ## Features
 
-- **Modular Architecture** — Extensible plugin system for deployment components
-- **Django Integration** — Seamless integration via Django management commands
-- **Multiple Deployment Modes** — Support for `--local`, `--latest`, and `--release` deployments
-- **Infrastructure as Code** — Define infrastructure using Python with pyinfra
-- **Git-based Artifacts** — Automated artifact creation from git repository
-- **SSL Management** — Built-in support for SSL certificates and Let's Encrypt
-- **Python Compilation** — Optionally compile Python from source for specific versions
+- **App-based, modular architecture** — deployment behaviour ships as Django apps you add to `INSTALLED_APPS`
+- **Django integration** — drive everything through `manage.py` commands
+- **Multiple deployment strategies** — `in_place`, `zero_downtime`, and `bluegreen`
+- **Generated config** — systemd units and nginx sites are rendered from templates (no hand-maintained config files)
+- **Generated local settings** — optionally write a `local.py` with production values on the server
+- **Infrastructure as code** — define hosts in Python with pyinfra
+- **Git-based artifacts** — automated artifact creation from your git repository
+- **SSL management** — issue/renew certificates (Let's Encrypt, Bunny DNS, Tailscale) and sync them to servers
+- **Release notifications & versioning** — semantic version tags, changelogs, and Slack/webhook notifications
 
 ## Installation
 
 ```bash
 pip install djaploy
-```
-
-Or with Poetry:
-
-```bash
-poetry add djaploy
+# or: poetry add djaploy
 ```
 
 ### Optional extras
@@ -38,141 +35,117 @@ pip install djaploy[bunny]          # Bunny DNS certbot plugin
 
 ## Quick Start
 
-### 1. Add to Django settings
+### 1. Add djaploy to Django settings
+
+Add the base `djaploy` app plus the feature apps you want. Each feature is its own Django app
+that contributes deploy hooks when present in `INSTALLED_APPS`:
 
 ```python
 INSTALLED_APPS = [
-    # ...
-    "djaploy",
+    # ... your apps ...
+    "djaploy",                 # management commands + core deploy hooks (required)
+    "djaploy.apps.nginx",      # generate + deploy nginx config, manage SSL, reload
+    "djaploy.apps.systemd",    # reload systemd, manage services
+    "djaploy.apps.sync_certs", # sync certs from 1Password to servers
+    # Other available apps:
+    # "djaploy.apps.versioning", "djaploy.apps.borg", "djaploy.apps.rclone",
+    # "djaploy.apps.tailscale", "djaploy.apps.janitor",
 ]
 
-# Required paths
-from pathlib import Path
+# Required paths (plain strings or Path objects both work)
+import os
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-PROJECT_DIR = BASE_DIR
-GIT_DIR = PROJECT_DIR.parent
-DJAPLOY_CONFIG_DIR = PROJECT_DIR / "infra"
+BASE_DIR = os.path.dirname(...)          # your Django project dir (contains manage.py's package)
+GIT_DIR = os.path.dirname(BASE_DIR)      # repo root (where .git lives) — used for artifacts/versioning
+# ARTIFACT_DIR = "deployment"            # optional; where artifacts are written (default: "deployment")
 ```
 
-### 2. Create project structure
+> **Migrating from 0.x?** `DjaployConfig`, `module_configs`, `modules=[...]`, the `infra/config.py`
+> file, and the `deploy_files/` copy mechanism have been removed. All deployment config now lives on
+> `HostConfig`, features are enabled via `INSTALLED_APPS`, and systemd/nginx are generated from
+> templates. See [Configuration](#configuration) below.
+
+### 2. Create the project structure
+
+djaploy discovers infrastructure by scanning each installed app's `infra/` directory (in
+`INSTALLED_APPS` order, first match wins). Put your deployment config inside one of your Django apps:
 
 ```
-your-django-project/
-├── manage.py
-├── your_app/
-│   └── settings.py
-└── infra/                          # Deployment configuration
-    ├── config.py                   # Main configuration
-    ├── inventory/                  # Host definitions per environment
-    │   ├── production.py
-    │   └── staging.py
-    └── deploy_files/               # Environment-specific files
-        ├── production/
-        │   └── etc/systemd/system/app.service
-        └── staging/
+your_app/
+├── infra/
+│   ├── inventory/
+│   │   ├── production.py      # hosts = [HostConfig(...), ...]
+│   │   └── staging.py
+│   ├── certificates.py        # all_certificates = [...]  (optional, for SSL)
+│   ├── prepare.py             # optional local pre-deploy build steps
+│   └── djaploy_hooks.py       # optional project-specific @deploy_hook functions
+└── ...
 ```
 
-### 3. Configure deployment
+There is **no** `infra/config.py` — host and deployment settings live entirely on `HostConfig`.
 
-**infra/config.py**:
+### 3. Define inventory
 
 ```python
-from djaploy.config import DjaployConfig
-from pathlib import Path
-
-config = DjaployConfig(
-    project_name="myapp",
-    djaploy_dir=Path(__file__).parent,
-    manage_py_path=Path("manage.py"),
-
-    python_version="3.11",
-    app_user="app",
-    ssh_user="deploy",
-
-    modules=[
-        "djaploy.modules.core",
-        "djaploy.modules.nginx",
-        "djaploy.modules.systemd",
-    ],
-
-    services=["myapp", "myapp-worker"],
-)
-```
-
-### 4. Define inventory
-
-**infra/inventory/production.py**:
-
-```python
+# your_app/infra/inventory/production.py
 from djaploy.config import HostConfig
 
 hosts = [
     HostConfig(
-        name="web-1",
-        ssh_host="192.168.1.100",
+        "web-1",
+        ssh_hostname="192.168.1.100",
         ssh_user="deploy",
-        app_user="app",
-        env="production",
-        services=["myapp", "myapp-worker"],
+        app_name="myapp",                  # deployment name == your Django package (see note below)
+        app_user="myapp",
+        deployment_strategy="zero_downtime",
+        python_version="3.11",
+        manage_py_path="manage.py",        # relative path to manage.py inside the artifact
+        services=["myapp"],
+        gunicorn_conf={"workers": 3, "timeout": 30},
+        nginx_conf={"client_max_body_size": "25M"},
     ),
 ]
 ```
 
-### 5. Deploy files
+> **`app_name` and your Django package.** `app_name` drives the server app dir
+> (`/home/{app_user}/apps/{app_name}`), the systemd service/socket names, and the nginx upstream.
+> If you use [`generate_local_settings`](#generated-local-settings), `app_name` must match your
+> Django package name, since the generated `local.py` is written to
+> `{manage_subdir}/{app_name}/settings/local.py`.
 
-Place environment-specific configuration files in `deploy_files/` — these are copied to the server during deployment:
-
-```ini
-# deploy_files/production/etc/systemd/system/myapp.service
-[Unit]
-Description=My Django App
-After=network.target
-
-[Service]
-Type=simple
-User=app
-WorkingDirectory=/home/app/apps/myapp
-ExecStart=/home/app/.local/bin/poetry run gunicorn config.wsgi
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Usage
-
-### Configure a server
+### 4. Configure and deploy
 
 ```bash
-python manage.py configureserver --env production
+python manage.py djaploy configure --env production   # one-time server setup
+python manage.py djaploy deploy --env production       # deploy latest git HEAD
 ```
 
-Sets up the application user, installs Python and Poetry, and prepares the directory structure.
+## Configuration
 
-### Deploy
+All deployment configuration lives on `djaploy.config.HostConfig`. Commonly used fields:
 
-```bash
-# Deploy local changes (development)
-python manage.py deploy --env production --local
-
-# Deploy latest git commit
-python manage.py deploy --env production --latest
-
-# Deploy a specific release
-python manage.py deploy --env production --release v1.0.0
-```
-
-Deployment flow:
-
-1. Creates a tar.gz artifact from git
-2. Uploads to servers
-3. Extracts application code
-4. Copies environment-specific deploy files (nginx, systemd, etc.)
-5. Installs dependencies via Poetry
-6. Runs migrations
-7. Collects static files
-8. Restarts services
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `ssh_hostname` | — (required) | SSH host |
+| `ssh_user` / `ssh_port` / `ssh_key` | `deploy` / `22` / — | SSH connection |
+| `ssh_known_hosts_file` | — | known_hosts for strict host verification |
+| `app_name` | — (required) | Deployment name; drives dir/service/socket/nginx names |
+| `app_user` | `app` | OS user the app runs as |
+| `app_hostname` | — | Public hostname (used for `server_name` / ALLOWED_HOSTS) |
+| `deployment_strategy` | `zero_downtime` | `in_place`, `zero_downtime`, or `bluegreen` |
+| `python_version` / `python_compile` | `3.11` / `False` | Python on the server (apt or compiled) |
+| `manage_py_path` | `manage.py` | Path to `manage.py` within the artifact |
+| `services` / `timer_services` | — | systemd services/timers to manage |
+| `domains` | — | Certificates/domains for SSL (see [Certificates](#certificate-management)) |
+| `keep_releases` | `5` | Releases retained (zero_downtime) |
+| `generate_local_settings` | `False` | Write `local.py` on the server (see below) |
+| `shared_resources` | — | Extra paths symlinked from `shared/` |
+| `db_dir` | — | External database directory template |
+| `gunicorn_conf` | — | `workers`, `timeout`, `umask`, `wsgi_module`, `health_check_*` |
+| `nginx_conf` | — | `server_name`, `listen`, `client_max_body_size`, `custom` |
+| `core_conf` | — | `poetry_no_root`, `exclude_groups`, `poetry_lock`, `databases` |
+| `versioning_conf` / `notifications_conf` | — | See [Release Notifications & Versioning](#release-notifications--versioning) |
+| `backup` / `borg_backup` | — | `BackupConfig` / `BorgBackupConfig` |
 
 ## Deployment Strategies
 
@@ -220,14 +193,8 @@ python manage.py djaploy status --env production
 python manage.py djaploy rollback --env production
 ```
 
-#### Blue-green deployment flow
-
-1. **Deploy** -- extracts artifact to inactive slot, installs dependencies, runs migrations, starts the slot's gunicorn service
-2. **Test** -- the staged slot is running and reachable via its socket (e.g. `curl --unix-socket /run/myapp-green/myapp.sock http://localhost/health/`)
-3. **Activate** -- rewrites nginx upstream to point to the new slot, reloads nginx
-4. **Rollback** (if needed) -- switches nginx back to the previous slot, which is still running
-
-> **Note:** Migrations run during Step 1, before traffic switches. Both the old and new slots share the same database, so migrations must be **backward-compatible** (use the expand/contract pattern). Deploy new code that handles both old and new schema, activate, then clean up in a subsequent deploy.
+> **Note:** Migrations run during deploy, before traffic switches. Both slots share the same
+> database, so migrations must be **backward-compatible** (expand/contract pattern).
 
 ### Server directory layout comparison
 
@@ -237,22 +204,10 @@ For `app_user="myapp-api"`, `app_name="myapp"`:
 |------|-----------|-----------------|-------------|
 | App code | `.../apps/myapp/` | `.../apps/myapp/current/` | `.../apps/myapp/slots/{blue\|green}/` |
 | Virtualenv | Managed by Poetry | `.../shared/venv-{HASH}-py{ver}/` | `.../shared/venv-{HASH}-py{ver}/` |
-| Static files | `.../apps/myapp/staticfiles/` | `.../apps/myapp/shared/staticfiles/` | `.../apps/myapp/shared/staticfiles/` |
+| Static files | `.../apps/myapp/static/` | `.../apps/myapp/shared/static/` | `.../apps/myapp/shared/static/` |
 | Media files | `.../apps/myapp/media/` | `.../apps/myapp/shared/media/` | `.../apps/myapp/shared/media/` |
-| Database | via `db_dir` | via `db_dir` | via `db_dir` |
 
 All paths are relative to `/home/{app_user}/`.
-
-#### Shared directory (`zero_downtime` and `bluegreen`)
-
-Both strategies use a `shared/` directory for resources that persist across deployments:
-
-| Content | Purpose |
-|---------|---------|
-| `venv-{HASH}-py{version}/` | Virtualenvs keyed by `poetry.lock` hash. Reused when dependencies haven't changed. |
-| `staticfiles/` | Output of `collectstatic`. Served by nginx. |
-| `media/` | User-uploaded files. Served by nginx. |
-| Custom paths via `shared_resources` | Project-specific shared directories (e.g. `bostad/public`). |
 
 #### Systemd services comparison
 
@@ -260,99 +215,151 @@ Both strategies use a `shared/` directory for resources that persist across depl
 |----------|-------------|-------------|---------|
 | `in_place` | `{app}.service` | `/run/{app}/{app}.sock` | `poetry run gunicorn` |
 | `zero_downtime` | `{app}.service` | `/run/{app}/{app}.sock` | gunicornherder wrapping gunicorn |
-| `bluegreen` | `{app}-blue.service`, `{app}-green.service` | `/run/{app}-blue/{app}.sock`, `/run/{app}-green/{app}.sock` | Plain gunicorn (`Type=notify`) |
+| `bluegreen` | `{app}-blue.service`, `{app}-green.service` | `/run/{app}-{slot}/{app}.sock` | gunicorn (`Type=notify`) |
 
-Blue-green uses `Type=notify` -- gunicorn has native systemd-notify support, so systemd knows when the process is ready without needing gunicornherder.
+## Generated configuration
 
-#### Nginx configuration (bluegreen)
+In 1.x, djaploy **generates** systemd units and nginx sites from templates
+(`djaploy/infra/templates.py`) and writes them to the server during `deploy`/`configure` — there is
+no `deploy_files/` directory to maintain.
 
-Blue-green deploys the nginx upstream as a separate include file so it can be rewritten during activation without touching the site config:
+### systemd
 
-- Site config: `/etc/nginx/sites-available/{app_name}` (no inline upstream block)
-- Upstream config: `/etc/nginx/sites-available/{app_name}-upstream.conf`
+A unit is rendered for the host's strategy (`SYSTEMD_IN_PLACE`, `SYSTEMD_ZERO_DOWNTIME`, or a
+per-slot `SYSTEMD_BLUEGREEN`) to `/etc/systemd/system/{app_name}.service`. Workers, timeout, umask,
+and the WSGI module come from `gunicorn_conf` (the WSGI module otherwise derives from Django's
+`WSGI_APPLICATION`, falling back to `{app_name}.wsgi:application`).
 
-Activation rewrites the upstream file to point to the new slot's socket and reloads nginx.
+### nginx
 
-#### State tracking (bluegreen)
+The `djaploy.apps.nginx` app installs nginx, deploys SSL certs, symlinks the site, and reloads.
+The site config is rendered from:
 
-Blue-green maintains a `state.json` file at `/home/{app_user}/apps/{app_name}/state.json` that tracks the active slot and deployment metadata (release name, commit, venv path, python interpreter) for each slot. This is printed during deploy, activate, and status commands.
+- `NGINX_SITE` / `NGINX_SITE_SSL` for `in_place` / `zero_downtime`
+- `NGINX_SITE_BLUEGREEN` / `NGINX_SITE_SSL_BLUEGREEN` (+ a separate upstream file rewritten on
+  activation) for `bluegreen`
 
-### Certificate management
+The SSL variants are selected automatically when the host has `domains` with certificates. Template
+values are derived from `HostConfig`:
 
-```bash
-python manage.py update_certs           # Update certificate definitions
-python manage.py sync_certs --env production  # Sync certificates
+- `server_name` — `nginx_conf["server_name"]`, else the first domain's identifier, else `app_hostname`, else `_`
+- `ssl_certificate` / `ssl_certificate_key` — `/home/{app_user}/.ssl/{identifier}.{crt,key}`
+- static/media aliases — `{app_path}/static` and `{app_path}/media` (or `shared/...` for zero_downtime/bluegreen), overridable via `nginx_conf["static_path"]` / `nginx_conf["media_path"]`
+- `client_max_body_size` — `nginx_conf["client_max_body_size"]` (default `10M`), `listen` — `nginx_conf["listen"]`
+
+**Custom static/media locations:** set `nginx_conf={"static_path": ..., "media_path": ...}` to point
+nginx (and, for zero_downtime/bluegreen, the generated `local.py` `STATIC_ROOT`/`MEDIA_ROOT`) at a
+custom directory. Each value may be absolute (leading `/`) or relative to `{app_path}`. Make sure
+your Django `STATIC_ROOT`/`MEDIA_ROOT` resolve to the same paths. Example — serve from a `public/`
+dir next to `manage.py`:
+
+```python
+nginx_conf={
+    "static_path": "myproject/public/static",   # -> {app_path}/myproject/public/static
+    "media_path":  "myproject/public/media",
+}
 ```
 
-### Verify configuration
+**Bring your own nginx:** set `nginx_conf={"custom": True}` to skip built-in nginx generation and
+manage the config yourself (e.g. via a custom `deploy:configure` / `activate:post` hook).
+
+### Generated local settings
+
+Set `generate_local_settings=True` to have djaploy write
+`{manage_subdir}/{app_name}/settings/local.py` on the server during deploy, containing `DEBUG=False`,
+`ALLOWED_HOSTS` (from `app_hostname`), `DATABASES` (when `db_dir` is set), and — for
+`zero_downtime`/`bluegreen` — `STATIC_ROOT`/`MEDIA_ROOT`. Your project settings must import it:
+
+```python
+try:
+    from .local import *  # noqa
+except ImportError:
+    pass
+```
+
+Because the path is keyed on `app_name`, `app_name` must equal your Django settings package name.
+
+## Commands
 
 ```bash
+# Deployment lifecycle
+python manage.py djaploy deploy   --env <env> [--local | --latest | --release TAG] [--activate]
+python manage.py djaploy configure --env <env>
+python manage.py djaploy rollback  --env <env> [--release NAME]
+python manage.py djaploy activate  --env <env>     # bluegreen
+python manage.py djaploy status    --env <env>     # bluegreen
+python manage.py djaploy --list                    # list available commands
+
+# Certificates
+python manage.py update_certs --email admin@example.com [--staging] [--force]
+python manage.py sync_certs   --env <env>
+
+# Diagnostics / backups
 python manage.py verify --verbose
+python manage.py restore_backup --env <env>
 ```
 
-## Modules
+Deploy modes: `--local` (uncommitted working tree), `--latest` (git HEAD, default), `--release TAG`.
+Version bumps: `--bump-major | --bump-minor | --bump-patch`.
 
-djaploy uses a modular architecture — each component is a separate module that can be enabled or disabled per project.
+## Certificate management
 
-### Built-in modules
-
-| Module | Description |
-|--------|-------------|
-| `djaploy.modules.core` | Core setup: users, Python, Poetry, artifact deployment, migrations |
-| `djaploy.modules.nginx` | Nginx web server configuration |
-| `djaploy.modules.systemd` | Systemd service management |
-| `djaploy.modules.sync_certs` | SSL certificate syncing |
-| `djaploy.modules.cert_renewal` | Certificate renewal automation |
-| `djaploy.modules.litestream` | Litestream database replication |
-| `djaploy.modules.rclone` | Rclone-based backups |
-| `djaploy.modules.tailscale` | Tailscale networking |
-
-### Custom modules
-
-Extend `BaseModule` to create project-specific deployment logic:
+Define certificates in `<app>/infra/certificates.py`:
 
 ```python
-from djaploy.modules.base import BaseModule
+from djaploy.certificates import BunnyDnsCertificate, LetsEncryptCertificate, TailscaleDnsCertificate
 
-class MyModule(BaseModule):
-    def configure_server(self, host):
-        # Server configuration logic
-        pass
-
-    def deploy(self, host, artifact_path):
-        # Deployment logic
-        pass
+all_certificates = [
+    prod_cert := BunnyDnsCertificate(
+        "example.com", "www.example.com",
+        op_crt="/MyProject/example.com/fullchain.pem",   # 1Password item field for the cert
+        op_key="/MyProject/example.com/privkey.pem",     # 1Password item field for the key
+        bunny_api_key_secret="/MyProject/Bunny - API Key/credential",
+    ),
+]
 ```
 
-Add it to your config:
+Reference certificates from a host via `domains=[prod_cert]`. Then:
+
+```bash
+python manage.py update_certs --email admin@example.com   # issue/renew (to 1Password)
+python manage.py sync_certs --env production              # push certs to /home/{app_user}/.ssl/
+```
+
+`update_certs` discovers `certificates.py` via app discovery and uses `settings.OP_ACCOUNT` for the
+1Password account. Other certificate types: `LetsEncryptCertificate` (HTTP-01, optionally via an
+SSH `SshHttpHook`) and `TailscaleDnsCertificate`.
+
+## Project customization
+
+### Hooks
+
+Add `<app>/infra/djaploy_hooks.py` with `@deploy_hook(<phase>)` functions. They're auto-discovered
+and run at the matching lifecycle phase. Remote (`deploy:*`) hooks receive `(host_data, artifact_path)`:
 
 ```python
-config = DjaployConfig(
-    modules=[
-        "djaploy.modules.core",
-        "myproject.infra.modules.custom",
-    ],
-)
+from djaploy.hooks import deploy_hook
+
+@deploy_hook("deploy:configure")
+def my_step(host_data, artifact_path):
+    from pyinfra.operations import server
+    server.shell(name="example", commands=["echo hello"], _sudo=True)
 ```
 
-## Project Customization
+Phases (in order): `configure`, then per-deploy `deploy:upload` → `deploy:configure` → `deploy:pre`
+→ `deploy:start`; plus `activate`/`rollback` (and their `:pre`/`:post`) for those commands. The
+management command also runs `{command}:precommand` / `precommand` / `{command}:postcommand` /
+`postcommand` locally around the pyinfra run.
 
 ### prepare.py
 
-Projects can include a `prepare.py` file for local build steps that run before deployment:
+Add `<app>/infra/prepare.py` for local build steps run before the artifact is created (skipped with
+`--skip-prepare`):
 
 ```python
-# prepare.py
-from djaploy.prepare import run_command
-
-def prepare():
-    run_command("npm run build")
-    run_command("python manage.py collectstatic --noinput")
+from pyinfra import local
+local.shell("npm run build")
 ```
-
-### Custom deploy files
-
-Projects can include environment-specific configuration files in a `deploy_files/` directory that will be copied to the server during deployment. The directory structure mirrors the target filesystem layout (e.g. `deploy_files/production/etc/nginx/sites-available/myapp` gets copied to `/etc/nginx/sites-available/myapp` on the server).
 
 ## Release Notifications & Versioning
 
@@ -366,11 +373,11 @@ djaploy includes built-in support for semantic versioning, changelog generation,
 
 ### Enabling the feature
 
-Configure `versioning_conf` and `notifications_conf` on your `HostConfig`:
+Configure `versioning_conf` and `notifications_conf` on your `HostConfig` (requires
+`djaploy.apps.versioning` in `INSTALLED_APPS`):
 
 ```python
-# infra/inventory/production.py
-from djaploy import HostConfig
+from djaploy.config import HostConfig
 
 hosts = [
     HostConfig(
@@ -384,13 +391,13 @@ hosts = [
             "push_tags": True,                   # Push tags to remote
         },
         notifications_conf={
-            "display_name": "My App",            # Name shown in notifications
-            "notify": True,                      # Enable Slack notifications for this env
+            "display_name": "My App",
+            "notify": True,
             "notify_on_failure": True,
             "webhook_url": "op://vault/slack/webhook-url",
             "changelog_generator": "llm",        # "simple" or "llm"
             "changelog_config": {
-                "api_key": "op://vault/mistral/api-key",  # 1Password reference or plain key
+                "api_key": "op://vault/mistral/api-key",
                 "model": "devstral-small-latest",
                 "api_url": "https://api.mistral.ai/v1/chat/completions",
             },
@@ -421,54 +428,15 @@ hosts = [
 | `changelog_generator` | `"simple"` | Generator type: `simple` or `llm` |
 | `changelog_config` | `{}` | Config passed to changelog generator |
 
-### Changelog generators
-
-**Simple** — Concatenates commit messages into a brief summary:
-```python
-"changelog_generator": "simple"
-```
-
-**LLM** — Uses an AI model to generate natural language summaries:
-```python
-"changelog_generator": "llm",
-"changelog_config": {
-    "api_key": "your-api-key",           # Required
-    "api_url": "https://api.mistral.ai/v1/chat/completions",  # OpenAI-compatible
-    "model": "devstral-small-latest",
-}
-```
-
 ### Version bump override
 
-Override the default increment type per deployment:
-
 ```bash
-python manage.py deploy --env production --bump-major   # v1.0.0 -> v2.0.0
-python manage.py deploy --env production --bump-minor   # v1.0.0 -> v1.1.0
-python manage.py deploy --env production --bump-patch   # v1.0.0 -> v1.0.1 (default)
+python manage.py djaploy deploy --env production --bump-minor   # v1.0.0 -> v1.1.0
 ```
-
-### How it works
-
-```
-Deploy to dev (tag_environments: ["production"])
-├─ Calculates version from commits since last tag
-├─ Generates changelog
-├─ Sends notification ✓
-└─ Does NOT create tag (dev not in tag_environments)
-
-Deploy to production
-├─ Same version/changelog calculation
-├─ Sends notification ✓
-├─ Creates tag v1.0.5 and pushes to remote ✓
-└─ Deploys VERSION file to server
-```
-
-When redeploying the same version (no new commits), the changelog is extracted from the existing git tag message to ensure consistent notifications across environments.
 
 ### VERSION file
 
-The versioning module deploys a `VERSION` file to the server containing:
+The versioning app deploys a `VERSION` file to the server:
 
 ```
 VERSION=v1.0.5

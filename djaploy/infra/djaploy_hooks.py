@@ -499,7 +499,9 @@ def generate_local_settings(host_data, artifact_path):
     """
     import posixpath
     from pyinfra.operations import files
-    from djaploy.infra.utils import is_zero_downtime, is_bluegreen, get_app_path
+    from djaploy.infra.utils import (
+        is_zero_downtime, is_bluegreen, get_app_path, get_static_media_paths,
+    )
 
     if not getattr(host_data, "generate_local_settings", False):
         return
@@ -561,9 +563,9 @@ def generate_local_settings(host_data, artifact_path):
     lines.append("DEBUG = False\n")
 
     if is_zero_downtime(host_data) or is_bluegreen(host_data):
-        shared_path = f"{app_path}/shared"
-        lines.append(f'STATIC_ROOT = "{shared_path}/staticfiles"\n')
-        lines.append(f'MEDIA_ROOT = "{shared_path}/media"\n')
+        static_path, media_path = get_static_media_paths(host_data)
+        lines.append(f'STATIC_ROOT = "{static_path}"\n')
+        lines.append(f'MEDIA_ROOT = "{media_path}"\n')
 
     content = "\n".join(lines)
 
