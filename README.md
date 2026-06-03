@@ -142,7 +142,7 @@ All deployment configuration lives on `djaploy.config.HostConfig`. Commonly used
 | `shared_resources` | — | Extra paths symlinked from `shared/` |
 | `db_dir` | — | External database directory template |
 | `gunicorn_conf` | — | `workers`, `timeout`, `umask`, `wsgi_module`, `health_check_*` |
-| `nginx_conf` | — | `server_name`, `listen`, `client_max_body_size`, `custom` |
+| `nginx_conf` | — | `server_name`, `listen`, `client_max_body_size`, `static_path`, `media_path`, `custom` |
 | `core_conf` | — | `poetry_no_root`, `exclude_groups`, `poetry_lock`, `databases` |
 | `versioning_conf` / `notifications_conf` | — | See [Release Notifications & Versioning](#release-notifications--versioning) |
 | `backup` / `borg_backup` | — | `BackupConfig` / `BorgBackupConfig` |
