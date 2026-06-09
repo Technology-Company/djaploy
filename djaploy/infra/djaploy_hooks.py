@@ -562,6 +562,11 @@ def generate_local_settings(host_data, artifact_path):
 
     lines.append("DEBUG = False\n")
 
+    secret_key = getattr(host_data, "secret_key", None)
+    if secret_key:
+        # str() resolves an OpSecret to its value; repr safely quotes/escapes it.
+        lines.append(f"SECRET_KEY = {str(secret_key)!r}\n")
+
     if is_zero_downtime(host_data) or is_bluegreen(host_data):
         static_path, media_path = get_static_media_paths(host_data)
         lines.append(f'STATIC_ROOT = "{static_path}"\n')

@@ -176,6 +176,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     manage_py_path: str = "manage.py"  # Relative path to manage.py in the artifact
     db_dir: Optional[str] = None  # External database directory template
     generate_local_settings: bool = False  # Generate local.py with DATABASES, ALLOWED_HOSTS, etc.
+    secret_key: Optional[str] = None  # Django SECRET_KEY value (e.g. OpSecret) injected into generated local.py
     shared_resources: Optional[List[str]] = None  # Paths to symlink from shared/
 
     # Per-module configuration (merged with defaults)
