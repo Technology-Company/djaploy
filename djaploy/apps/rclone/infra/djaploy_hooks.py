@@ -162,8 +162,16 @@ cleanup() {{
 # Set trap to cleanup on exit
 trap cleanup EXIT
 
+# Retention enforcement (defined here, run before the dump so it still
+# executes even if a later backup step fails)
+{_generate_retention_function(retention_days, host_name)}
+
 # Start backup
 log_message "Starting backup for {host_name}"
+
+# Enforce retention up front so stale backups are pruned on every run,
+# independent of whether the dump/upload below succeeds.
+enforce_retention || true
 
 # Create temporary backup directory
 mkdir -p "$TEMP_BACKUP_DIR"
@@ -173,6 +181,23 @@ log_message "Creating consistent database backups"
 
 # List of databases to backup
 DATABASES=({db_array})
+
+# Fail fast (with a clear message) if there isn't enough scratch space. VACUUM
+# INTO writes a full copy of every DB, then those are tarred — so we need room
+# for roughly the total DB size plus the archive. The threshold scales from the
+# live DB sizes (1.5x), so it is correct on any host without a hard-coded value.
+REQUIRED_KB=0
+for DB in "${{DATABASES[@]}}"; do
+    if [ -f "$DB_DIR/$DB" ]; then
+        REQUIRED_KB=$((REQUIRED_KB + $(du -k "$DB_DIR/$DB" | cut -f1)))
+    fi
+done
+REQUIRED_KB=$((REQUIRED_KB * 3 / 2))
+AVAIL_KB=$(df --output=avail "$(dirname "$TEMP_BACKUP_DIR")" | tail -1)
+if [ "${{AVAIL_KB:-0}}" -lt "$REQUIRED_KB" ]; then
+    log_message "ERROR: only $((AVAIL_KB/1024))MB free, need ~$((REQUIRED_KB/1024))MB for backup scratch space — aborting DB dump"
+    exit 1
+fi
 
 for DB in "${{DATABASES[@]}}"; do
     if [ -f "$DB_DIR/$DB" ]; then
@@ -296,36 +321,36 @@ else
     log_message "Media directory not found or empty at $MEDIA_DIR, skipping media backup"
 fi
 
-# Clean up old backups based on retention policy
-{_generate_retention_cleanup(retention_days, host_name)}
+# (Retention was already enforced at the start of this run via enforce_retention.)
 
 log_message "Backup completed successfully for {host_name}"
 '''
 
 
-def _generate_retention_cleanup(retention_days: int, host_name: str) -> str:
-    """Generate the retention cleanup section of the backup script."""
+def _generate_retention_function(retention_days: int, host_name: str) -> str:
+    """Generate an ``enforce_retention()`` shell function for the backup script.
+
+    Defined near the top of the script and invoked *before* the database dump
+    so retention runs on every invocation even if a later step fails. Previously
+    the cleanup was the final step, guarded by ``set -e`` and multiple ``exit 1``
+    branches, so any dump/upload failure skipped it and old backups accumulated
+    without bound (this is what filled the linnahovi disk).
+    """
     if retention_days <= 0:
-        return ""
+        return "enforce_retention() { :; }  # retention disabled (retention_days<=0)"
     return (
-        'log_message "Cleaning up backup folders older than {days} days"\n'
-        '\n'
-        '# Calculate cutoff date\n'
-        'CUTOFF_DATE=$(date -d "{days} days ago" +"%Y-%m-%d")\n'
-        '\n'
-        '# List all date folders and delete those older than cutoff\n'
-        'rclone lsf "${{REMOTE_NAME}}:{host}/" --dirs-only --config "$RCLONE_CONFIG" | while read -r folder; do\n'
-        '    # Remove trailing slash\n'
-        '    folder_name="${{folder%/}}"\n'
-        '\n'
-        '    # Check if folder name matches date format and is older than cutoff\n'
-        '    if [[ "$folder_name" =~ ^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$ ]] && [[ "$folder_name" < "$CUTOFF_DATE" ]]; then\n'
-        '        log_message "Deleting old backup folder: $folder_name"\n'
-        '        rclone purge "${{REMOTE_NAME}}:{host}/$folder_name" --config "$RCLONE_CONFIG" --quiet\n'
-        '    fi\n'
-        'done\n'
-        '\n'
-        'log_message "Cleanup completed"'
+        'enforce_retention() {{\n'
+        '    log_message "Enforcing retention: removing remote folders older than {days} days"\n'
+        '    local cutoff; cutoff=$(date -d "{days} days ago" +"%Y-%m-%d")\n'
+        '    rclone lsf "${{REMOTE_NAME}}:{host}/" --dirs-only --config "$RCLONE_CONFIG" 2>>"$LOG_FILE" | while read -r folder; do\n'
+        '        local name="${{folder%/}}"\n'
+        '        if [[ "$name" =~ ^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$ ]] && [[ "$name" < "$cutoff" ]]; then\n'
+        '            log_message "Deleting old backup folder: $name"\n'
+        '            rclone purge "${{REMOTE_NAME}}:{host}/$name" --config "$RCLONE_CONFIG" --quiet 2>>"$LOG_FILE" \\\n'
+        '                || log_message "WARN: purge failed for $name"\n'
+        '        fi\n'
+        '    done\n'
+        '}}'
     ).format(days=retention_days, host=host_name)
 
 
