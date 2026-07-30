@@ -7,6 +7,23 @@ This script sets up Django environment before running pyinfra,
 allowing inventory files to use Django models and settings.
 """
 
+# Monkey-patch before anything else is imported. pyinfra_cli does this in its
+# own __init__, but by then Django has been set up and ssl/threading are already
+# imported — gevent warns about exactly that ("Monkey-patching ssl after ssl has
+# already been imported ... may silently lead to incorrect behaviour"), which is
+# not a warning to live with in a tool that exists to open SSH connections.
+#
+# It also breaks Django projects outright. Patching walks every live object and
+# isinstance()-checks it; that resolves any LazyObject it touches. Django's
+# `django.contrib.admin.sites.site` is one, and it exists whenever anything has
+# imported `django.contrib.admin` — Wagtail does, via
+# `wagtail/admin/admin_url_finder.py`. If the project doesn't have the admin app
+# in INSTALLED_APPS, resolving it raises `LookupError: No installed app with
+# label 'admin'` before pyinfra has connected to anything.
+from gevent import monkey
+
+monkey.patch_all()
+
 import os
 import sys
 
