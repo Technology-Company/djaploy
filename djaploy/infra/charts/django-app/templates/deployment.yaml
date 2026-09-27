@@ -1,0 +1,109 @@
+{{- $sqlite := eq .Values.database.engine "sqlite" -}}
+{{- $fullname := include "django-app.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+spec:
+  # SQLite on a local disk + in-process background work: never two pods at once.
+  replicas: {{ if .Values.suspended }}0{{ else if $sqlite }}1{{ else }}{{ .Values.replicas }}{{ end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: {{ if $sqlite }}Recreate{{ else }}RollingUpdate{{ end }}
+  selector:
+    matchLabels:
+      {{- include "django-app.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "django-app.selectorLabels" (dict "root" . "component" "web") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- include "django-app.podCommon" . | trim | nindent 6 }}
+      # Room for in-flight requests and background work to wind down.
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        # nginx serves /static/ from the files collectstatic baked into the image.
+        - name: collect-static
+          image: {{ include "django-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "cp -R {{ .Values.staticRoot }}/. /static/"]
+          volumeMounts:
+            - { name: static, mountPath: /static }
+        {{- if .Values.migrations.enabled }}
+        # djaploy's deploy:pre + deploy:start: snapshot, migrate, extra commands.
+        - name: migrate
+          image: {{ include "django-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "/scripts/predeploy.sh"]
+          {{- include "django-app.containerEnv" . | nindent 10 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+        {{- end }}
+      containers:
+        - name: web
+          image: {{ include "django-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["gunicorn"]
+          args:
+            - --chdir={{ dir .Values.django.managePy }}
+            - --bind=0.0.0.0:8000
+            - --workers={{ .Values.gunicorn.workers }}
+            - --timeout={{ .Values.gunicorn.timeout }}
+            - --access-logfile=-
+            {{- range .Values.gunicorn.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+            - {{ required "django.wsgiModule is required" .Values.django.wsgiModule }}
+          {{- include "django-app.containerEnv" . | nindent 10 }}
+          ports:
+            - { name: gunicorn, containerPort: 8000 }
+          # Host + X-Forwarded-Proto so ALLOWED_HOSTS and SECURE_SSL_REDIRECT accept the probe.
+          startupProbe:
+            {{- include "django-app.probe" . | nindent 12 }}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            {{- include "django-app.probe" . | nindent 12 }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            {{- include "django-app.probe" . | nindent 12 }}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.resources.web | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+        # djaploy's nginx site: static/media files, upload limit, real client IP.
+        - name: nginx
+          image: {{ .Values.nginx.image }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.nginx | nindent 12 }}
+          volumeMounts:
+            - { name: static, mountPath: /static, readOnly: true }
+            - { name: data, mountPath: /data, readOnly: true }
+            - { name: nginx-conf, mountPath: /etc/nginx/conf.d, readOnly: true }
+      volumes:
+        {{- include "django-app.dataVolume" . | nindent 8 }}
+        - name: static
+          emptyDir: {}
+        - name: nginx-conf
+          configMap:
+            name: {{ $fullname }}-nginx
+        - name: scripts
+          configMap:
+            name: {{ $fullname }}-scripts

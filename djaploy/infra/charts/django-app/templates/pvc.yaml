@@ -1,0 +1,19 @@
+{{- if not .Values.storage.existingClaim }}
+# db.sqlite3, media/ and backups/ on this machine's local disk.
+# Kept when the app or its Helm release is deleted.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "django-app.fullname" . }}-data
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}
+{{- end }}

@@ -18,7 +18,7 @@ discover_hooks()
 registry = get_registry()
 
 for phase in ("createjanitoruser:pre", "createjanitoruser", "createjanitoruser:post"):
-    for hook in registry.get_remote_hooks(phase):
+    for hook in registry.get_remote_hooks(phase, host.data):
         _deploy_decorator(hook.function.__name__)(hook.function)(
             host.data
         )

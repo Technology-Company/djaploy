@@ -20,7 +20,7 @@ release = getattr(host.data, "release", None)
 if release == "None" or release == "":
     release = None
 
-for hook in registry.get_remote_hooks("rollback"):
+for hook in registry.get_remote_hooks("rollback", host.data):
     _deploy_decorator(hook.function.__name__)(hook.function)(
         host.data, release
     )
@@ -30,7 +30,7 @@ for hook in registry.get_remote_hooks("rollback"):
 from djaploy.infra.utils import is_bluegreen
 if is_bluegreen(host.data):
     for phase in ("activate:post",):
-        for hook in registry.get_remote_hooks(phase):
+        for hook in registry.get_remote_hooks(phase, host.data):
             _deploy_decorator(hook.function.__name__)(hook.function)(
                 host.data
             )

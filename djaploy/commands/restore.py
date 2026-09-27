@@ -33,7 +33,7 @@ if _source_borg:
     restore_opts["source_borg_config"] = _source_borg
 
 for phase in ("restore:pre", "restore", "restore:post"):
-    for hook in registry.get_remote_hooks(phase):
+    for hook in registry.get_remote_hooks(phase, host.data):
         _deploy_decorator(hook.function.__name__)(hook.function)(
             host.data, restore_opts
         )

@@ -1,0 +1,41 @@
+{{- $root := . -}}
+{{- $sqlite := eq .Values.database.engine "sqlite" -}}
+{{- range .Values.workers }}
+{{- $component := printf "worker-%s" .name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "django-app.fullname" $root }}-{{ .name }}
+  labels:
+    {{- include "django-app.labels" $root | nindent 4 }}
+spec:
+  replicas: {{ if $root.Values.suspended }}0{{ else }}{{ default 1 .replicas }}{{ end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: {{ if $sqlite }}Recreate{{ else }}RollingUpdate{{ end }}
+  selector:
+    matchLabels:
+      {{- include "django-app.selectorLabels" (dict "root" $root "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "django-app.selectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
+    spec:
+      {{- include "django-app.podCommon" $root | trim | nindent 6 }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: {{ .name }}
+          image: {{ include "django-app.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: {{ toJson .command }}
+          {{- include "django-app.containerEnv" $root | nindent 10 }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        {{- include "django-app.dataVolume" $root | nindent 8 }}
+{{- end }}

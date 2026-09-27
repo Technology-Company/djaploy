@@ -164,7 +164,12 @@ def _rollback_validate_strategy(context):
     _, data = hosts[0]
     strategy = (data.get("deployment_strategy") if isinstance(data, dict)
                 else getattr(data, "deployment_strategy", "zero_downtime"))
-    if strategy not in ("zero_downtime", "bluegreen"):
+    if strategy not in ("zero_downtime", "bluegreen", "k3s"):
         raise ValueError(
-            "Rollback is only supported with deployment_strategy='zero_downtime' or 'bluegreen'"
+            "Rollback is only supported with deployment_strategy='zero_downtime', 'bluegreen' or 'k3s'"
         )
+
+
+# The k3s strategy's hooks (djaploy/infra/k3s.py). Imported last so its local
+# image build runs after the artifact and release info above.
+import djaploy.infra.k3s  # noqa: E402,F401

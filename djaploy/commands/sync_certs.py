@@ -18,7 +18,7 @@ registry = get_registry()
 
 # Only run sync_certs-specific hooks, not the full deploy lifecycle.
 for phase in ("sync_certs:pre", "sync_certs", "sync_certs:post"):
-    for hook in registry.get_remote_hooks(phase):
+    for hook in registry.get_remote_hooks(phase, host.data):
         _deploy_decorator(hook.function.__name__)(hook.function)(
             host.data
         )

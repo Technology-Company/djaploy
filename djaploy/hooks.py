@@ -23,6 +23,16 @@ warning::
         # This replaces djaploy's built-in deploy_nginx
         ...
 
+Deployment strategies:
+
+Remote hooks run for the classic strategies (in_place, zero_downtime,
+bluegreen) unless they say otherwise.  Hosts with ``deployment_strategy="k3s"``
+only run hooks that opt in::
+
+    @deploy_hook("deploy:start", strategies=("k3s",))
+    def helm_upgrade(host_data, artifact_path):
+        ...
+
 Ordering is controlled by assigning hooks to the correct phase.  Each
 command file calls phases in a fixed sequence (e.g. ``deploy:pre`` →
 ``deploy`` → ``deploy:post``).  Within a single phase hooks run in
@@ -38,10 +48,17 @@ from typing import Any, Callable, Dict, List, Optional
 log = logging.getLogger(__name__)
 
 
+CLASSIC_STRATEGIES = ("in_place", "zero_downtime", "bluegreen")
+
+
 @dataclass
 class RemoteFunctionHook:
     """A remote hook backed by a standalone function (from @deploy_hook)."""
     function: object  # Callable
+    strategies: Optional[tuple] = None  # None = the classic strategies
+
+    def applies_to(self, strategy: str) -> bool:
+        return strategy in (self.strategies or CLASSIC_STRATEGIES)
 
 
 class HookRegistry:
@@ -59,7 +76,8 @@ class HookRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register(self, hook_name: str, fn: Callable, *, remote: bool = False, override: bool = False) -> None:
+    def register(self, hook_name: str, fn: Callable, *, remote: bool = False, override: bool = False,
+                 strategies: Optional[tuple] = None) -> None:
         fn_name = fn.__name__
         key = (hook_name, fn_name)
 
@@ -84,7 +102,7 @@ class HookRegistry:
             self._overridden.add(key)
 
         if remote:
-            hooks.append(RemoteFunctionHook(function=fn))
+            hooks.append(RemoteFunctionHook(function=fn, strategies=tuple(strategies) if strategies else None))
         else:
             hooks.append(fn)
 
@@ -101,16 +119,19 @@ class HookRegistry:
             return fn
         return decorator
 
-    def deploy_hook(self, name: str, *, override: bool = False) -> Callable:
+    def deploy_hook(self, name: str, *, override: bool = False,
+                    strategies: Optional[tuple] = None) -> Callable:
         """Decorator for remote hooks (run on target servers via pyinfra).
 
         Args:
             name: Hook phase name (e.g. "deploy:configure")
             override: If True, silently replace a hook with the same
                       function name.  If False (default), log a warning.
+            strategies: Deployment strategies this hook runs for. Default:
+                        the classic strategies (not k3s).
         """
         def decorator(fn: Callable) -> Callable:
-            self.register(name, fn, remote=True, override=override)
+            self.register(name, fn, remote=True, override=override, strategies=strategies)
             return fn
         return decorator
 
@@ -130,9 +151,17 @@ class HookRegistry:
                 results.append(result)
         return results
 
-    def get_remote_hooks(self, hook_name: str) -> List[RemoteFunctionHook]:
-        """Return the list of remote hook functions for *hook_name*."""
-        return list(self._remote_hooks.get(hook_name, []))
+    def get_remote_hooks(self, hook_name: str, host_data=None) -> List[RemoteFunctionHook]:
+        """Return the remote hook functions for *hook_name*.
+
+        With *host_data*, only the hooks that apply to that host's
+        deployment strategy.
+        """
+        hooks = list(self._remote_hooks.get(hook_name, []))
+        if host_data is None:
+            return hooks
+        strategy = getattr(host_data, "deployment_strategy", None) or "zero_downtime"
+        return [h for h in hooks if h.applies_to(strategy)]
 
     # ------------------------------------------------------------------
     # Discovery

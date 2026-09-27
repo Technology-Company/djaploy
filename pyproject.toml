@@ -56,6 +56,9 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["djaploy*"]
 
+[tool.setuptools.package-data]
+djaploy = ["infra/charts/django-app/*.yaml", "infra/charts/django-app/templates/*"]
+
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.0,<9"

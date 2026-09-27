@@ -1,0 +1,81 @@
+{{- $fullname := include "django-app.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-nginx
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+        client_max_body_size {{ .Values.nginx.clientMaxBodySize }};
+
+        # Traefik is the only client: take the real client IP from its X-Forwarded-For,
+        # then hand it to Django as X-Real-IP (allauth rate limiting keys on it).
+        set_real_ip_from 10.42.0.0/16;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+
+        location /static/ {
+            alias /static/;
+            expires 30d;
+            add_header Cache-Control "public, immutable";
+        }
+        {{- if .Values.nginx.serveMedia }}
+
+        location /media/ {
+            alias /data/media/;
+            expires 30d;
+        }
+        {{- end }}
+
+        location / {
+            proxy_pass http://127.0.0.1:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # TLS ends at Traefik; pass its scheme through, not nginx's own (http).
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_redirect off;
+            proxy_read_timeout {{ .Values.nginx.proxyReadTimeout }};
+            proxy_send_timeout {{ .Values.nginx.proxyReadTimeout }};
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-scripts
+  labels:
+    {{- include "django-app.labels" . | nindent 4 }}
+data:
+  predeploy.sh: |
+    set -eu
+    mkdir -p /data/media /data/backups
+    {{- if and (eq .Values.database.engine "sqlite") .Values.database.sqlite.snapshotBeforeMigrate }}
+    python /scripts/snapshot.py {{ .Values.database.sqlite.keepSnapshots }}
+    {{- end }}
+    python {{ .Values.django.managePy }} migrate --noinput
+    {{- range .Values.migrations.extraCommands }}
+    python {{ $.Values.django.managePy }} {{ . }}
+    {{- end }}
+  snapshot.py: |
+    """Consistent copy of the SQLite DB before migrating (the rollback point)."""
+    import glob, os, sqlite3, sys, time
+
+    src = os.environ["SQLITE_PATH"]
+    keep = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    if not os.path.exists(src):
+        print("snapshot: no database yet, skipping")
+        sys.exit(0)
+    dst = time.strftime("/data/backups/pre-migrate-%Y%m%d-%H%M%S.sqlite3")
+    source, target = sqlite3.connect(src), sqlite3.connect(dst)
+    source.backup(target)
+    source.close()
+    target.close()
+    print(f"snapshot: {dst}")
+    for old in sorted(glob.glob("/data/backups/pre-migrate-*.sqlite3"))[:-keep]:
+        os.remove(old)
+        print(f"snapshot: removed {old}")

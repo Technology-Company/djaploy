@@ -196,6 +196,52 @@ python manage.py djaploy rollback --env production
 > **Note:** Migrations run during deploy, before traffic switches. Both slots share the same
 > database, so migrations must be **backward-compatible** (expand/contract pattern).
 
+### k3s (`"k3s"`)
+
+The app runs as a container on a [k3s](https://k3s.io) node instead of under
+systemd. Server access works exactly as for the other strategies (SSH key and
+sudo password from the inventory, e.g. `OpSecret`/`OpFilePath`); there is no
+registry and no CI involved.
+
+```python
+HostConfig(
+    "rancor",
+    ssh_hostname=str(OpSecret("/Infra/rancor/IP")),
+    ssh_user="janitor",
+    ssh_key=OpFilePath("/Infra/SSH Key/private key?ssh-format=openssh"),
+    _sudo_password=str(OpSecret("/Infra/rancor/password")),
+    deployment_strategy="k3s",
+    app_name="myapp",                       # namespace + Helm release (or k3s_conf["namespace"])
+    app_hostname="myapp.example.com",
+    manage_py_path="myapp/manage.py",
+    gunicorn_conf={"workers": 3, "timeout": 120, "wsgi_module": "myapp.wsgi:application"},
+    secret_key=OpSecret("/Infra/myapp/secret_key"),
+    data={"mistral_api_key": OpSecret("/Infra/Mistral/credential")},   # → env MISTRAL_API_KEY
+    k3s_conf={
+        "settings_module": "myapp.settings.production",
+        "static_root": "/app/myapp/public/static",
+        "extra_commands": ["seed_data --org acme"],   # after migrate, every deploy
+        "storage_size": "20Gi",
+        "suspended": False,                            # True: scale to zero
+    },
+)
+```
+
+`deploy` builds the image locally from the usual git artifact (the repo needs
+a `Dockerfile`; build args `MANAGE_PY` and `SETTINGS_MODULE`), ships it over
+SSH into k3s (skipped when the node already has that exact image), writes
+`secret_key` and the scalar `data` entries into a Secret, and runs
+`helm upgrade --install` with the bundled `django-app` chart
+(`djaploy/infra/charts/django-app`): gunicorn + nginx in one pod, SQLite and
+media on a local volume, a database snapshot and `migrate` before every
+rollout. It waits for the new pod and fails with its logs if it doesn't come up.
+
+`configure` installs helm on the node and gives the SSH user a kubeconfig;
+`rollback` is `helm rollback` (optionally `--release <revision>`). Only hooks
+registered with `strategies=("k3s",)` run for k3s hosts, so the systemd/nginx
+hooks of the other strategies never touch them. The node needs cert-manager
+with a `letsencrypt-prod` ClusterIssuer for TLS.
+
 ### Server directory layout comparison
 
 For `app_user="myapp-api"`, `app_name="myapp"`:

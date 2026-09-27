@@ -25,7 +25,7 @@ registry = get_registry()
 artifact_path = Path(host.data.artifact_path)
 
 for phase in ("deploy:upload", "deploy:configure", "deploy:pre", "deploy:start"):
-    for hook in registry.get_remote_hooks(phase):
+    for hook in registry.get_remote_hooks(phase, host.data):
         _deploy_decorator(hook.function.__name__)(hook.function)(
             host.data, artifact_path
         )
@@ -34,7 +34,7 @@ for phase in ("deploy:upload", "deploy:configure", "deploy:pre", "deploy:start")
 _activate_val = getattr(host.data, "activate", None)
 if _activate_val in (True, "true", "True"):
     for phase in ("activate:pre", "activate", "activate:post"):
-        _hooks = registry.get_remote_hooks(phase)
+        _hooks = registry.get_remote_hooks(phase, host.data)
         print(f"[activate] phase={phase} hooks={[h.function.__name__ for h in _hooks]}")
         for hook in _hooks:
             _deploy_decorator(hook.function.__name__)(hook.function)(

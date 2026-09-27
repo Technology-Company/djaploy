@@ -476,3 +476,42 @@ class TestDjaployAppDiscovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHookStrategies(unittest.TestCase):
+    """Remote hooks are filtered by the host's deployment_strategy."""
+
+    def setUp(self):
+        self.registry = HookRegistry()
+
+        @self.registry.deploy_hook("deploy:start")
+        def restart_systemd(host_data, artifact_path):
+            pass
+
+        @self.registry.deploy_hook("deploy:start", strategies=("k3s",))
+        def helm_upgrade(host_data, artifact_path):
+            pass
+
+        @self.registry.deploy_hook("deploy:start", strategies=("in_place", "k3s"))
+        def notify(host_data, artifact_path):
+            pass
+
+    def names(self, strategy):
+        host_data = MagicMock(deployment_strategy=strategy)
+        return [h.function.__name__ for h in self.registry.get_remote_hooks("deploy:start", host_data)]
+
+    def test_classic_strategies_skip_k3s_only_hooks(self):
+        for strategy in ("in_place", "zero_downtime", "bluegreen"):
+            with self.subTest(strategy=strategy):
+                self.assertIn("restart_systemd", self.names(strategy))
+                self.assertNotIn("helm_upgrade", self.names(strategy))
+
+    def test_k3s_runs_only_hooks_that_opt_in(self):
+        self.assertEqual(self.names("k3s"), ["helm_upgrade", "notify"])
+
+    def test_explicit_strategies_are_respected(self):
+        self.assertIn("notify", self.names("in_place"))
+        self.assertNotIn("notify", self.names("zero_downtime"))
+
+    def test_without_host_data_all_hooks_are_returned(self):
+        self.assertEqual(len(self.registry.get_remote_hooks("deploy:start")), 3)

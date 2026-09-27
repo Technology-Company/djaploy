@@ -1,0 +1,36 @@
+{{- $root := . -}}
+{{- range .Values.cronJobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "django-app.fullname" $root }}-{{ .name }}
+  labels:
+    {{- include "django-app.labels" $root | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  suspend: {{ $root.Values.suspended }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            {{- include "django-app.selectorLabels" (dict "root" $root "component" (printf "cron-%s" .name)) | nindent 12 }}
+        spec:
+          {{- include "django-app.podCommon" $root | trim | nindent 10 }}
+          restartPolicy: Never
+          containers:
+            - name: {{ .name }}
+              image: {{ include "django-app.image" $root }}
+              imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              command: {{ toJson .command }}
+              {{- include "django-app.containerEnv" $root | nindent 14 }}
+              volumeMounts:
+                - { name: data, mountPath: /data }
+          volumes:
+            {{- include "django-app.dataVolume" $root | nindent 12 }}
+{{- end }}

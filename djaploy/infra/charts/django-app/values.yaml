@@ -1,0 +1,105 @@
+# Defaults for every Django app. Each app overrides these in its own repo's
+# deploy/common.yaml and deploy/<machine>/<env>.yaml (docs/04-chart-reference.md).
+
+# -- Built and pushed to GHCR by the app repo's CI, which also bumps `tag`.
+image:
+  repository: ""            # ghcr.io/technology-company/<repo>
+  tag: ""                   # sha-abc1234 (main) or v1.2.3 (release tag)
+  pullPolicy: IfNotPresent
+
+# -- Public hostnames. The first is the canonical one (DJANGO_BASE_URL, probes).
+hostnames: []
+
+# -- Scale to zero without deleting anything (data import, maintenance).
+suspended: false
+
+django:
+  managePy: manage.py       # relative to the image WORKDIR (/app)
+  wsgiModule: ""            # e.g. docms.wsgi:application
+  settingsModule: ""        # e.g. docms.settings.production
+  env: {}                   # extra non-secret env vars
+
+gunicorn:
+  workers: 2
+  timeout: 120
+  extraArgs: []
+
+# -- Existing Secret whose keys all become env vars (djaploy's k3s strategy
+# writes "<release>-env" from the host's secret_key and data).
+envFromSecret: ""
+
+onePassword:
+  vault: "Techco - Infra"
+  # Env var → "<item>/<field label>" in the vault, like djaploy's OpSecret paths.
+  # Only the items named here are synced into the app's namespace.
+  env: {}
+  #  SECRET_KEY: groundhog-server/secret_key
+  #  MISTRAL_API_KEY: DocMS - Mistral API Key/credential
+  # Item with a `.dockerconfigjson` field, synced as the GHCR pull secret.
+  pullSecretItem: "GHCR - k8s pull"
+
+database:
+  engine: sqlite            # sqlite → 1 replica, Recreate; postgres → rolling updates
+  sqlite:
+    path: /data/db.sqlite3
+    snapshotBeforeMigrate: true   # copy to /data/backups/ before each migrate
+    keepSnapshots: 10
+  postgres:
+    secretName: ""          # e.g. CNPG's "<cluster>-app"
+    secretKey: uri          # exposed to the app as DATABASE_URL
+
+migrations:
+  enabled: true
+  # Idempotent manage.py commands run after migrate on every rollout
+  # (djaploy deploy:start hooks such as seed commands).
+  extraCommands: []
+
+# -- Ignored (always 1) while database.engine is sqlite.
+replicas: 1
+
+storage:
+  size: 10Gi
+  storageClassName: local-path-retain
+  existingClaim: ""
+
+# -- Where `collectstatic` wrote files inside the image (Django STATIC_ROOT).
+staticRoot: /app/public/static
+
+nginx:
+  image: nginxinc/nginx-unprivileged:1.31.6-alpine
+  clientMaxBodySize: 512M
+  proxyReadTimeout: 300s
+  serveMedia: true          # public /media/ like djaploy's nginx site
+
+ingress:
+  className: traefik
+  clusterIssuer: letsencrypt-prod
+
+probes:
+  path: /healthz
+
+resources:
+  web:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 2Gi }
+  nginx:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 256Mi }
+
+# -- djaploy timer_services → CronJobs sharing the app's image, env and volume.
+cronJobs: []
+#  - name: nightly-cleanup
+#    schedule: "0 3 * * *"
+#    command: ["python", "manage.py", "cleanup"]
+
+# -- Extra long-running processes (celery, qcluster, ...), one Deployment each.
+workers: []
+#  - name: celery
+#    command: ["celery", "-A", "myapp", "worker", "-l", "info"]
+#    replicas: 1
+
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  runAsNonRoot: true
