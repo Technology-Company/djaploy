@@ -94,7 +94,9 @@ def build_values(host_data, image_ref: str) -> dict:
     repository, tag = image_ref.rsplit(":", 1)
 
     values = {
-        "image": {"repository": repository, "tag": tag, "pullPolicy": "IfNotPresent"},
+        # Never pull: the image only exists on the node (shipped over SSH). Pulling
+        # "djaploy/<app>" would ask Docker Hub, where anyone could publish it.
+        "image": {"repository": repository, "tag": tag, "pullPolicy": "Never"},
         "hostnames": [h for h in [_get(host_data, "app_hostname"), *_get(conf, "hostnames", [])] if h],
         "suspended": bool(_get(conf, "suspended", False)),
         "django": {

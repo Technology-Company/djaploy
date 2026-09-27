@@ -42,7 +42,7 @@ class BuildValuesTests(unittest.TestCase):
     def test_maps_host_config_onto_chart_values(self):
         values = k3s.build_values(host(), "djaploy/docms:abc1234")
 
-        self.assertEqual(values["image"], {"repository": "djaploy/docms", "tag": "abc1234", "pullPolicy": "IfNotPresent"})
+        self.assertEqual(values["image"], {"repository": "djaploy/docms", "tag": "abc1234", "pullPolicy": "Never"})
         self.assertEqual(values["hostnames"], ["rancor.techco.fi"])
         self.assertEqual(values["django"]["managePy"], "docms/manage.py")
         self.assertEqual(values["django"]["wsgiModule"], "docms.wsgi:application")
