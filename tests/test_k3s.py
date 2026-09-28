@@ -109,3 +109,23 @@ class ImageRefTests(unittest.TestCase):
 class ChartTests(unittest.TestCase):
     def test_bundled_chart_version(self):
         self.assertEqual(k3s.chart_version(), "0.2.1")
+
+
+class BuildModeTests(unittest.TestCase):
+    def test_defaults_to_building_on_the_node(self):
+        self.assertEqual(k3s.build_mode({}), "server")
+
+    def test_local_builds_can_be_chosen(self):
+        self.assertEqual(k3s.build_mode({"build": "local"}), "local")
+
+    def test_unknown_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            k3s.build_mode({"build": "cloud"})
+
+
+class ContainerdRefTests(unittest.TestCase):
+    def test_docker_hub_names_get_the_registry_prefix(self):
+        self.assertEqual(k3s.containerd_ref("djaploy/docms:abc"), "docker.io/djaploy/docms:abc")
+
+    def test_registry_names_are_kept(self):
+        self.assertEqual(k3s.containerd_ref("ghcr.io/org/app:abc"), "ghcr.io/org/app:abc")

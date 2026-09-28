@@ -227,16 +227,20 @@ HostConfig(
 )
 ```
 
-`deploy` builds the image locally from the usual git artifact (the repo needs
-a `Dockerfile`; build args `MANAGE_PY` and `SETTINGS_MODULE`), ships it over
-SSH into k3s (skipped when the node already has that exact image), writes
-`secret_key` and the scalar `data` entries into a Secret, and runs
+`deploy` uploads the usual git artifact and builds the image **on the node**
+with BuildKit, straight into k3s (the repo needs a `Dockerfile`; build args
+`MANAGE_PY` and `SETTINGS_MODULE`); nothing is needed locally besides SSH, and
+the build is skipped when the node already has that exact image. With
+`k3s_conf={"build": "local"}` it builds with Docker locally and ships the image
+over SSH instead. It then writes `secret_key` and the scalar `data` entries
+into a Secret, and runs
 `helm upgrade --install` with the bundled `django-app` chart
 (`djaploy/infra/charts/django-app`): gunicorn + nginx in one pod, SQLite and
 media on a local volume, a database snapshot and `migrate` before every
 rollout. It waits for the new pod and fails with its logs if it doesn't come up.
 
-`configure` installs helm on the node and gives the SSH user a kubeconfig;
+`configure` installs helm and BuildKit (a `djaploy-buildkitd` service building
+into k3s' containerd) on the node and gives the SSH user a kubeconfig;
 `rollback` is `helm rollback` (optionally `--release <revision>`). Only hooks
 registered with `strategies=("k3s",)` run for k3s hosts, so the systemd/nginx
 hooks of the other strategies never touch them. The node needs cert-manager

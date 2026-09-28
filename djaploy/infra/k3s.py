@@ -5,13 +5,15 @@ The app runs as a container on a k3s node, rendered from the bundled
 ``charts/django-app`` Helm chart. Server access (SSH key, sudo password) comes
 from the inventory exactly as for the other strategies.
 
-    deploy:precommand (local)  build the image from the git artifact, save it
-    deploy:upload              import the image into k3s over SSH (skipped if
-                               the node already has it), upload the chart
+    deploy:upload              upload the git artifact and build the image on
+                               the node with BuildKit, straight into k3s
+                               (skipped if the node already has that image);
+                               upload the chart
     deploy:configure           write the release's values and its env Secret
                                (secret_key + data, e.g. from OpSecret)
     deploy:start               helm upgrade --install, wait for the rollout
-    configure                  install helm, give the SSH user a kubeconfig
+    configure                  install helm and BuildKit, give the SSH user a
+                               kubeconfig
     rollback                   helm rollback
 
 HostConfig fields used: app_name, app_hostname, manage_py_path, gunicorn_conf
@@ -21,7 +23,8 @@ data, and ``k3s_conf``::
     k3s_conf={
         "namespace": "docms",                     # default: app_name
         "image": "djaploy/docms",                 # default: djaploy/<git dir name>
-        "platform": "linux/amd64",                # node architecture
+        "build": "server",                        # or "local": docker build here, ship the image
+        "platform": "linux/amd64",                # node architecture (local builds only)
         "settings_module": "docms.settings.production",
         "static_root": "/app/docms/public/static",
         "extra_commands": ["seed_realty --org-slug bo"],
@@ -43,6 +46,12 @@ from djaploy.hooks import deploy_hook, hook
 
 K3S = ("k3s",)
 HELM_VERSION = "v4.3.0"
+BUILDKIT_VERSION = "v0.33.0"
+BUILDKIT_SHA256 = {  # GitHub release asset digests
+    "amd64": "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead",
+    "arm64": "e5acfb5929f967fde3b925ddb39f79fd481a0e96774c641fab3a0e83950d7bfa",
+}
+BUILDKIT_SOCKET = "unix:///run/buildkit/buildkitd.sock"
 CHART_DIR = Path(__file__).parent / "charts" / "django-app"
 KUBECONFIG = "export KUBECONFIG=$HOME/.kube/config"
 
@@ -140,6 +149,18 @@ def build_env_secret(host_data) -> dict:
     }
 
 
+def build_mode(conf) -> str:
+    mode = _get(conf, "build", "server")
+    if mode not in ("server", "local"):
+        raise ValueError(f'k3s_conf["build"] must be "server" or "local", not {mode!r}')
+    return mode
+
+
+def containerd_ref(image: str) -> str:
+    """How containerd names an image ("djaploy/app:tag" → "docker.io/djaploy/app:tag")."""
+    return image if "." in image.split("/")[0] else f"docker.io/{image}"
+
+
 def image_ref_for(conf: dict, commit: str, mode: str, release: str = None) -> str:
     from django.conf import settings
     repository = _get(conf, "image") or f"djaploy/{Path(settings.GIT_DIR).name.lower()}"
@@ -157,7 +178,7 @@ def image_ref_for(conf: dict, commit: str, mode: str, release: str = None) -> st
 
 @hook("deploy:precommand")
 def _k3s_build_image(context):
-    """Build the image from the git artifact and save it for upload."""
+    """Name the image; for local builds, build it here and save it for upload."""
     from djaploy.deploy import _load_inventory_hosts
 
     hosts = context.get("_hosts") or _load_inventory_hosts(context["inventory_file"])
@@ -170,8 +191,16 @@ def _k3s_build_image(context):
     conf = _get(host, "k3s_conf", {})
     commit = context["pyinfra_data"].get("commit") or "unknown"
     image = image_ref_for(conf, commit, context.get("mode", "latest"), context.get("release"))
+    context["k3s_image"] = image
+    context["pyinfra_data"]["k3s_image"] = image
+    if build_mode(conf) == "server":
+        return  # built on the node from the artifact (k3s_upload)
+
     artifact = Path(context["artifact_path"])
     archive = artifact.parent / f"image.{image.replace('/', '_').replace(':', '.')}.tar.gz"
+    context["pyinfra_data"]["k3s_image_archive"] = str(archive)
+    if archive.exists():
+        return  # built and saved before; no Docker needed
 
     have = subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
     if not have:
@@ -182,18 +211,13 @@ def _k3s_build_image(context):
             cmd += ["--build-arg", f"SETTINGS_MODULE={conf['settings_module']}"]
         with open(artifact, "rb") as context_tar:
             subprocess.run(cmd + ["-"], stdin=context_tar, check=True)
-    if not archive.exists():
-        print(f"Saving {image} → {archive.name}...", flush=True)
-        with open(archive, "wb") as out:
-            save = subprocess.Popen(["docker", "save", image], stdout=subprocess.PIPE)
-            subprocess.run(["gzip", "-1"], stdin=save.stdout, stdout=out, check=True)
-            if save.wait() != 0:
-                archive.unlink(missing_ok=True)
-                raise RuntimeError(f"docker save {image} failed")
-
-    context["k3s_image"] = image
-    context["pyinfra_data"]["k3s_image"] = image
-    context["pyinfra_data"]["k3s_image_archive"] = str(archive)
+    print(f"Saving {image} → {archive.name}...", flush=True)
+    with open(archive, "wb") as out:
+        save = subprocess.Popen(["docker", "save", image], stdout=subprocess.PIPE)
+        subprocess.run(["gzip", "-1"], stdin=save.stdout, stdout=out, check=True)
+        if save.wait() != 0:
+            archive.unlink(missing_ok=True)
+            raise RuntimeError(f"docker save {image} failed")
 
 
 # ── remote ────────────────────────────────────────────────────────────
@@ -221,6 +245,55 @@ fi"""],
         _sudo=True,
     )
     server.shell(
+        name=f"Install BuildKit {BUILDKIT_VERSION} (builds into k3s' containerd)",
+        commands=[f"""set -e
+V={BUILDKIT_VERSION}
+if [ "$(buildctl --version 2>/dev/null | awk '{{print $3}}')" != "$V" ]; then
+  A=$(uname -m); case $A in x86_64) A=amd64 ;; aarch64) A=arm64 ;; esac
+  case $A in amd64) SUM={BUILDKIT_SHA256["amd64"]} ;; arm64) SUM={BUILDKIT_SHA256["arm64"]} ;; esac
+  T=$(mktemp -d); cd "$T"
+  curl -fsSLO https://github.com/moby/buildkit/releases/download/$V/buildkit-$V.linux-$A.tar.gz
+  echo "$SUM  buildkit-$V.linux-$A.tar.gz" | sha256sum -c
+  tar -xzf buildkit-$V.linux-$A.tar.gz
+  install -m755 bin/buildkitd bin/buildctl /usr/local/bin/
+  cd /; rm -rf "$T"
+fi
+mkdir -p /etc/buildkit
+cat > /etc/buildkit/buildkitd.toml <<'TOML'
+# djaploy: build straight into k3s' containerd, where the kubelet runs images.
+[grpc]
+  address = ["{BUILDKIT_SOCKET}"]
+
+[worker.oci]
+  enabled = false
+
+[worker.containerd]
+  enabled = true
+  address = "/run/k3s/containerd/containerd.sock"
+  namespace = "k8s.io"
+  gc = true
+TOML
+cat > /etc/systemd/system/djaploy-buildkitd.service <<'UNIT'
+[Unit]
+Description=BuildKit for djaploy (builds into k3s' containerd)
+After=k3s.service
+Requires=k3s.service
+
+[Service]
+ExecStart=/usr/local/bin/buildkitd --config /etc/buildkit/buildkitd.toml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable djaploy-buildkitd
+systemctl restart djaploy-buildkitd
+for i in $(seq 30); do buildctl --addr {BUILDKIT_SOCKET} debug workers >/dev/null 2>&1 && break; sleep 1; done
+buildctl --addr {BUILDKIT_SOCKET} debug workers"""],
+        _sudo=True,
+    )
+    server.shell(
         name=f"kubeconfig for {user}",
         commands=[f"install -d -m700 -o {user} -g {user} /home/{user}/.kube && "
                   f"install -m600 -o {user} -g {user} /etc/rancher/k3s/k3s.yaml /home/{user}/.kube/config"],
@@ -230,20 +303,36 @@ fi"""],
 
 @deploy_hook("deploy:upload", strategies=K3S)
 def k3s_upload(host_data, artifact_path):
-    """Import the image into k3s (unless present) and upload the chart."""
+    """Build (or import) the image into k3s unless present; upload the chart."""
     from pyinfra import host
     from pyinfra.facts.server import Command
     from pyinfra.operations import files, server
 
+    conf = _get(host_data, "k3s_conf", {})
     image = _get(host_data, "k3s_image")
-    archive = _get(host_data, "k3s_image_archive")
-    ref = image if "." in image.split("/")[0] else f"docker.io/{image}"  # how containerd names it
+    ref = containerd_ref(image)
     present = host.get_fact(
         Command, command=f"k3s ctr -n k8s.io images ls -q name=={ref} 2>/dev/null || true", _sudo=True,
     )
     if (present or "").strip() == ref:
-        print(f"[k3s] {ref} already on the node; skipping upload", flush=True)
+        print(f"[k3s] {ref} already on the node; skipping the build", flush=True)
+    elif build_mode(conf) == "server":
+        tag = image.rsplit(":", 1)[1]
+        src = f"/tmp/djaploy-src-{tag}"
+        args = [f"--opt build-arg:MANAGE_PY={_get(host_data, 'manage_py_path', 'manage.py')}"]
+        if _get(conf, "settings_module"):
+            args.append(f"--opt build-arg:SETTINGS_MODULE={conf['settings_module']}")
+        files.put(name=f"Upload source {tag}", src=str(artifact_path), dest=f"{src}.tar.gz")
+        server.shell(
+            name=f"Build {image} on the node",
+            commands=[f"""set -e
+rm -rf {src} && mkdir -p {src} && tar -xzf {src}.tar.gz -C {src}
+buildctl --addr {BUILDKIT_SOCKET} build --progress=plain --frontend dockerfile.v0 --local context={src} --local dockerfile={src} {' '.join(args)} --output type=image,name={ref},unpack=true
+rm -rf {src} {src}.tar.gz"""],
+            _sudo=True,
+        )
     else:
+        archive = _get(host_data, "k3s_image_archive")
         remote = f"/tmp/djaploy-{Path(archive).name}"
         files.put(name=f"Upload image {image}", src=archive, dest=remote)
         server.shell(
