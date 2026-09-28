@@ -244,14 +244,13 @@ if [ "$(helm version --short 2>/dev/null | cut -d+ -f1)" != "$V" ]; then
 fi"""],
         _sudo=True,
     )
-    sums = " ".join(f"{arch}={digest}" for arch, digest in BUILDKIT_SHA256.items())
     server.shell(
         name=f"Install BuildKit {BUILDKIT_VERSION} (builds into k3s' containerd)",
         commands=[f"""set -e
 V={BUILDKIT_VERSION}
 if [ "$(buildctl --version 2>/dev/null | awk '{{print $3}}')" != "$V" ]; then
   A=$(uname -m); case $A in x86_64) A=amd64 ;; aarch64) A=arm64 ;; esac
-  SUM=$(for kv in {sums}; do [ "${{kv%%=*}}" = "$A" ] && echo "${{kv#*=}}"; done)
+  case $A in amd64) SUM={BUILDKIT_SHA256["amd64"]} ;; arm64) SUM={BUILDKIT_SHA256["arm64"]} ;; esac
   T=$(mktemp -d); cd "$T"
   curl -fsSLO https://github.com/moby/buildkit/releases/download/$V/buildkit-$V.linux-$A.tar.gz
   echo "$SUM  buildkit-$V.linux-$A.tar.gz" | sha256sum -c
@@ -259,6 +258,21 @@ if [ "$(buildctl --version 2>/dev/null | awk '{{print $3}}')" != "$V" ]; then
   install -m755 bin/buildkitd bin/buildctl /usr/local/bin/
   cd /; rm -rf "$T"
 fi
+mkdir -p /etc/buildkit
+cat > /etc/buildkit/buildkitd.toml <<'TOML'
+# djaploy: build straight into k3s' containerd, where the kubelet runs images.
+[grpc]
+  address = ["{BUILDKIT_SOCKET}"]
+
+[worker.oci]
+  enabled = false
+
+[worker.containerd]
+  enabled = true
+  address = "/run/k3s/containerd/containerd.sock"
+  namespace = "k8s.io"
+  gc = true
+TOML
 cat > /etc/systemd/system/djaploy-buildkitd.service <<'UNIT'
 [Unit]
 Description=BuildKit for djaploy (builds into k3s' containerd)
@@ -266,7 +280,7 @@ After=k3s.service
 Requires=k3s.service
 
 [Service]
-ExecStart=/usr/local/bin/buildkitd --addr {BUILDKIT_SOCKET} --oci-worker=false --containerd-worker=true --containerd-worker-addr=/run/k3s/containerd/containerd.sock --containerd-worker-namespace=k8s.io --containerd-worker-gc=true --containerd-worker-gc-keepstorage=20000
+ExecStart=/usr/local/bin/buildkitd --config /etc/buildkit/buildkitd.toml
 Restart=always
 
 [Install]
