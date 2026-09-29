@@ -108,7 +108,7 @@ class ImageRefTests(unittest.TestCase):
 
 class ChartTests(unittest.TestCase):
     def test_bundled_chart_version(self):
-        self.assertEqual(k3s.chart_version(), "0.2.1")
+        self.assertEqual(k3s.chart_version(), "0.2.2")
 
 
 class BuildModeTests(unittest.TestCase):

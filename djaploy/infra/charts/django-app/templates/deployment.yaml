@@ -65,11 +65,11 @@ spec:
           # Host + X-Forwarded-Proto so ALLOWED_HOSTS and SECURE_SSL_REDIRECT accept the probe.
           startupProbe:
             {{- include "django-app.probe" . | nindent 12 }}
-            periodSeconds: 5
-            failureThreshold: 60
+            periodSeconds: {{ .Values.probes.startupPeriodSeconds }}
+            failureThreshold: {{ div 300 .Values.probes.startupPeriodSeconds }}
           readinessProbe:
             {{- include "django-app.probe" . | nindent 12 }}
-            periodSeconds: 10
+            periodSeconds: {{ .Values.probes.readinessPeriodSeconds }}
             timeoutSeconds: 5
           livenessProbe:
             {{- include "django-app.probe" . | nindent 12 }}
@@ -87,7 +87,7 @@ spec:
             - { name: http, containerPort: 8080 }
           readinessProbe:
             tcpSocket: { port: http }
-            periodSeconds: 10
+            periodSeconds: {{ .Values.probes.readinessPeriodSeconds }}
           livenessProbe:
             tcpSocket: { port: http }
             periodSeconds: 20

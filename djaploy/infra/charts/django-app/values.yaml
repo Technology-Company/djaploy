@@ -77,6 +77,10 @@ ingress:
 
 probes:
   path: /healthz
+  # -- Seconds between checks while the app starts (it gets 5 minutes in total),
+  # then while it runs. Short, so a rollout finishes as soon as the pod is up.
+  startupPeriodSeconds: 1
+  readinessPeriodSeconds: 2
 
 resources:
   web:
