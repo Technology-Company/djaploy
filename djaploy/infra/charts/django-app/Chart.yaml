@@ -2,4 +2,4 @@ apiVersion: v2
 name: django-app
 description: A Django app the way djaploy ran it (gunicorn + nginx + SQLite/media on local disk), on k3s.
 type: application
-version: 0.2.2
+version: 0.2.3

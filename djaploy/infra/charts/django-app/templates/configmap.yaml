@@ -57,10 +57,37 @@ data:
     {{- if and (eq .Values.database.engine "sqlite") .Values.database.sqlite.snapshotBeforeMigrate }}
     python /scripts/snapshot.py {{ .Values.database.sqlite.keepSnapshots }}
     {{- end }}
+    {{- if .Values.django.settingsModule }}
+    python /scripts/rollout.py
+    {{- else }}
+    {{- /* no settings module: let manage.py pick its default, one process per command */}}
     python {{ .Values.django.managePy }} migrate --noinput
     {{- range .Values.migrations.extraCommands }}
     python {{ $.Values.django.managePy }} {{ . }}
     {{- end }}
+    {{- end }}
+  # migrate + extraCommands in one process: Django starts once (~1 s on the
+  # node) instead of once per command.
+  rollout.py: |
+    import os
+    import shlex
+    import sys
+
+    MANAGE_PY = {{ .Values.django.managePy | quote }}
+    EXTRA_COMMANDS = {{ toJson (.Values.migrations.extraCommands | default list) }}
+
+    # What `python manage.py` does: its folder goes first on the path.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(MANAGE_PY)))
+
+    import django
+    from django.core.management import call_command
+
+    django.setup()
+    print("==> migrate", flush=True)
+    call_command("migrate", interactive=False, skip_checks=False)  # system checks, as manage.py migrate
+    for command in EXTRA_COMMANDS:
+        print(f"==> {command}", flush=True)
+        call_command(*shlex.split(command))
   snapshot.py: |
     """Consistent copy of the SQLite DB before migrating (the rollback point)."""
     import glob, os, sqlite3, sys, time
