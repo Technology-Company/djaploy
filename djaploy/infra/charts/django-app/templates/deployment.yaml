@@ -54,7 +54,6 @@ spec:
             - --bind=0.0.0.0:8000
             - --workers={{ .Values.gunicorn.workers }}
             - --timeout={{ .Values.gunicorn.timeout }}
-            - --access-logfile=-
             {{- range .Values.gunicorn.extraArgs }}
             - {{ . | quote }}
             {{- end }}
