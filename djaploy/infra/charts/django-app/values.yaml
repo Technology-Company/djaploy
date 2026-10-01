@@ -57,6 +57,14 @@ migrations:
 # -- Ignored (always 1) while database.engine is sqlite.
 replicas: 1
 
+# -- Recreate (stop the old pod, then start the new one) or RollingUpdate (start
+# the new pod beside the old one, switch when it's ready: no downtime). Default:
+# Recreate for SQLite, RollingUpdate for Postgres. A SQLite app on RollingUpdate
+# briefly has two pods on the same database, and the new one migrates while the
+# old one still serves: its migrations must not break the running version, and
+# startup work mustn't redo what the old pod is still doing.
+strategy: ""
+
 storage:
   size: 10Gi
   storageClassName: local-path-retain

@@ -1,5 +1,10 @@
 {{- $sqlite := eq .Values.database.engine "sqlite" -}}
 {{- $fullname := include "django-app.fullname" . -}}
+{{- $strategy := .Values.strategy | default (ternary "Recreate" "RollingUpdate" $sqlite) -}}
+{{- if not (has $strategy (list "Recreate" "RollingUpdate")) }}
+{{- fail (printf "strategy must be Recreate or RollingUpdate, not %q" $strategy) }}
+{{- end }}
+{{- $rolling := eq $strategy "RollingUpdate" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,11 +12,17 @@ metadata:
   labels:
     {{- include "django-app.labels" . | nindent 4 }}
 spec:
-  # SQLite on a local disk + in-process background work: never two pods at once.
+  # SQLite: one pod (a rolling update briefly runs the new one beside it).
   replicas: {{ if .Values.suspended }}0{{ else if $sqlite }}1{{ else }}{{ .Values.replicas }}{{ end }}
   revisionHistoryLimit: 5
   strategy:
-    type: {{ if $sqlite }}Recreate{{ else }}RollingUpdate{{ end }}
+    type: {{ $strategy }}
+    {{- if $rolling }}
+    # Start the new pod, wait until it's ready, then stop the old one.
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
   selector:
     matchLabels:
       {{- include "django-app.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
@@ -61,6 +72,12 @@ spec:
           {{- include "django-app.containerEnv" . | nindent 10 }}
           ports:
             - { name: gunicorn, containerPort: 8000 }
+          {{- if $rolling }}
+          # Keep serving while Traefik stops routing to this pod.
+          lifecycle:
+            preStop:
+              exec: { command: ["sleep", "5"] }
+          {{- end }}
           # Host + X-Forwarded-Proto so ALLOWED_HOSTS and SECURE_SSL_REDIRECT accept the probe.
           startupProbe:
             {{- include "django-app.probe" . | nindent 12 }}
@@ -84,6 +101,12 @@ spec:
           image: {{ .Values.nginx.image }}
           ports:
             - { name: http, containerPort: 8080 }
+          {{- if $rolling }}
+          # Keep serving while Traefik stops routing to this pod.
+          lifecycle:
+            preStop:
+              exec: { command: ["sleep", "5"] }
+          {{- end }}
           readinessProbe:
             tcpSocket: { port: http }
             periodSeconds: {{ .Values.probes.readinessPeriodSeconds }}
