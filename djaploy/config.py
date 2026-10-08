@@ -171,7 +171,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     # Deployment settings
     python_version: str = "3.11"
     python_compile: bool = False  # Compile Python from source
-    deployment_strategy: str = "zero_downtime"  # "in_place", "zero_downtime", "bluegreen" or "k3s"
+    deployment_strategy: str = "zero_downtime"  # "in_place", "zero_downtime", "bluegreen", "k3s" or "gitops"
     keep_releases: int = 5  # Releases to keep (zero_downtime only)
     manage_py_path: str = "manage.py"  # Relative path to manage.py in the artifact
     db_dir: Optional[str] = None  # External database directory template
@@ -188,6 +188,7 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
     artifact_conf: Optional[Dict[str, Any]] = None  # extra_files
     http_hook_conf: Optional[Dict[str, Any]] = None  # webroot_path
     k3s_conf: Optional[Dict[str, Any]] = None  # namespace, settings_module, static_root, values, ... (djaploy/infra/k3s.py)
+    gitops_conf: Optional[Dict[str, Any]] = None  # image, manifest, infra_repo, namespace, ... (djaploy/infra/gitops.py)
 
     def __new__(cls, name: str, **kwargs):
         dict_typing = cls._dict_annotations
@@ -215,10 +216,10 @@ class HostConfig(tuple, metaclass=HostConfigMetaclass):
 
         # Validate deployment_strategy
         strategy = config.get("deployment_strategy", "zero_downtime")
-        if strategy not in ("in_place", "zero_downtime", "bluegreen", "k3s"):
+        if strategy not in ("in_place", "zero_downtime", "bluegreen", "k3s", "gitops"):
             raise ValueError(
                 f"Invalid deployment_strategy: {strategy!r}. "
-                f"Must be 'in_place', 'zero_downtime', 'bluegreen' or 'k3s'"
+                f"Must be 'in_place', 'zero_downtime', 'bluegreen', 'k3s' or 'gitops'"
             )
 
         # Expand SSH key path if provided

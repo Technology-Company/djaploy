@@ -149,7 +149,7 @@ All deployment configuration lives on `djaploy.config.HostConfig`. Commonly used
 
 ## Deployment Strategies
 
-djaploy supports three deployment strategies, configured via `deployment_strategy` on `HostConfig`.
+djaploy supports several deployment strategies, configured via `deployment_strategy` on `HostConfig`.
 
 ### In-place (`"in_place"`)
 
@@ -245,6 +245,61 @@ into k3s' containerd) on the node and gives the SSH user a kubeconfig;
 registered with `strategies=("k3s",)` run for k3s hosts, so the systemd/nginx
 hooks of the other strategies never touch them. The node needs cert-manager
 with a `letsencrypt-prod` ClusterIssuer for TLS.
+
+### GitOps (`"gitops"`)
+
+The app runs in a shared Kubernetes cluster whose manifests live in a separate
+GitOps repository reconciled by [Argo CD](https://argo-cd.readthedocs.io).
+djaploy builds and pushes the image, pins its digest in that repository and
+syncs the Argo CD application; Argo CD is the only thing that changes the
+cluster. The inventory host is the **build node**.
+
+```python
+HostConfig(
+    "extor",                                  # build node: a cluster node with BuildKit
+    ssh_hostname="65.109.151.140",
+    ssh_user="janitor",                       # needs passwordless sudo
+    ssh_key=OpFilePath("/Infra/SSH Key/private key?ssh-format=openssh"),
+    ssh_known_hosts_file=OpFilePath("/Infra/extor/SSH Identity"),
+    deployment_strategy="gitops",
+    app_name="docms",
+    manage_py_path="docms/manage.py",
+    secret_key=OpSecret("/Infra/docms/secret_key"),
+    data={"mistral_api_key": OpSecret("/Infra/Mistral/credential")},   # → env MISTRAL_API_KEY
+    gitops_conf={
+        "namespace": "docms-prod",
+        "image": "registry.techco.fi:5443/docms-prod/docms",
+        "infra_repo": "~/src/hetzner-management",       # or $DJAPLOY_INFRA_REPO
+        "manifest": "kubernetes/apps/docms-prod/kustomization.yaml",
+        "argocd_app": "docms-prod",                      # default: namespace
+        "kubeconfig": "~/.kube/techco-me.kubeconfig",    # default: $KUBECONFIG
+        "env_secret": "docms-env",                       # default: <app_name>-env; None to skip
+        "settings_module": "docms.settings.production",
+    },
+)
+```
+
+`deploy` (all from the deploying machine, after the artifact is created):
+
+1. checks the GitOps checkout has no local edits to the manifest and pulls it;
+2. builds the artifact on the build node with a temporary BuildKit daemon
+   (`/opt/techco-buildkit`, root-only socket, cache under `/data/djaploy-build`)
+   and pushes `<image>:<commit>` using a one-hour token for the namespace's
+   `registry-builder` service account; build args `MANAGE_PY` and
+   `SETTINGS_MODULE`, as for k3s;
+3. applies the env Secret (`secret_key` + scalar `data`), so 1Password stays
+   the source of secrets and none are in Git;
+4. rewrites the digest pin in the manifest (a kustomize `images:` entry or
+   `<image>@sha256:` references), commits `Deploy <app> <commit> to <namespace>`
+   and pushes;
+5. syncs the Argo CD application at that commit and waits for Synced/Healthy.
+
+A failure stops the deploy at that step; nothing is pinned before a successful
+push. Kubernetes access uses your kubeconfig (it must be allowed to create
+`registry-builder` tokens, apply the Secret and patch the Argo CD application).
+No remote pyinfra hooks run for gitops hosts. Roll back by reverting the pin
+commit in the GitOps repository and syncing, or by redeploying an earlier
+commit; schema migrations may need a data-aware rollback.
 
 ### Server directory layout comparison
 

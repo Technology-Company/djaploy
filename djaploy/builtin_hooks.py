@@ -170,6 +170,7 @@ def _rollback_validate_strategy(context):
         )
 
 
-# The k3s strategy's hooks (djaploy/infra/k3s.py). Imported last so its local
-# image build runs after the artifact and release info above.
+# The k3s and gitops strategies' hooks (djaploy/infra/k3s.py, gitops.py). Imported
+# last so their local image builds run after the artifact and release info above.
 import djaploy.infra.k3s  # noqa: E402,F401
+import djaploy.infra.gitops  # noqa: E402,F401
