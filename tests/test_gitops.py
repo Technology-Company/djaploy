@@ -181,6 +181,7 @@ class SyncOperationTests(unittest.TestCase):
 class BuildNodeTests(unittest.TestCase):
     def test_ssh_options_from_inventory(self):
         node = gitops.BuildNode(host(ssh_port=2222, ssh_known_hosts_file="/tmp/kh"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(node.control_dir, ignore_errors=True))
         self.assertEqual(node.target, "janitor@203.0.113.10")
         self.assertIn("StrictHostKeyChecking=yes", node.opts)
         self.assertIn("UserKnownHostsFile=/tmp/kh", node.opts)
