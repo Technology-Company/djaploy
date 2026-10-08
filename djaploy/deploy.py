@@ -61,7 +61,15 @@ def run_command(context: Dict[str, Any]) -> None:
     call_hook(f"{command_name}:precommand", context)
     call_hook("precommand", context)
 
-    # 2. Run pyinfra
+    # 2. Run pyinfra (unless a precommand hook already did all the work,
+    #    e.g. the gitops strategy, which has no remote hooks)
+    if context.get("skip_remote"):
+        print(f"No remote execution needed ({context['skip_remote']}).", flush=True)
+        context["success"] = True
+        call_hook(f"{command_name}:postcommand", context)
+        call_hook("postcommand", context)
+        return
+
     print("Starting remote execution...", flush=True)
     processed_inventory = _preprocess_inventory(str(context["inventory_file"]))
 

@@ -15,8 +15,9 @@ pins its digest in the GitOps repository and syncs the Argo CD application:
       5. sync that commit in Argo CD and wait until Synced and Healthy
 
 The inventory host is the build node: its SSH connection (ssh_hostname,
-ssh_user, ssh_key, ssh_known_hosts_file) is used for the build, and no remote
-pyinfra hooks run. Kubernetes access uses the local kubeconfig.
+ssh_user, ssh_key, ssh_known_hosts_file) is used for the build over one
+multiplexed connection, retried if the connection drops. pyinfra is not run
+for gitops-only inventories. Kubernetes access uses the local kubeconfig.
 
 HostConfig fields used: app_name, manage_py_path, secret_key, data, and
 ``gitops_conf``::
@@ -50,7 +51,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -203,11 +206,23 @@ def check_infra_repo(repo: Path, manifest: str) -> str:
 
 
 class BuildNode:
-    """SSH to the build node with the inventory's connection settings."""
+    """SSH to the build node with the inventory's connection settings.
+
+    All commands share one multiplexed connection, so a build makes one SSH
+    handshake. A failed connection (ssh exit status 255) is retried: every
+    build-job command is safe to repeat, and an input stream is rewound first.
+    """
+
+    RETRIES = 3
 
     def __init__(self, host_data):
         self.target = f"{_get(host_data, 'ssh_user')}@{_get(host_data, 'ssh_hostname')}"
-        self.opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
+        # Short private directory: Unix socket paths are limited (~104 bytes on macOS).
+        self.control_dir = tempfile.mkdtemp(prefix="djaploy-ssh-", dir="/tmp")
+        self.opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                     "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+                     "-o", "ControlMaster=auto", "-o", f"ControlPath={self.control_dir}/%C",
+                     "-o", "ControlPersist=120"]
         if _get(host_data, "ssh_port"):
             self.opts += ["-p", str(_get(host_data, "ssh_port"))]
         if _get(host_data, "ssh_key"):
@@ -216,7 +231,23 @@ class BuildNode:
             self.opts += ["-o", f"UserKnownHostsFile={_get(host_data, 'ssh_known_hosts_file')}"]
 
     def run(self, command: str, **kwargs):
-        return _run(["ssh", *self.opts, self.target, command], **kwargs)
+        stdin = kwargs.get("stdin")
+        for attempt in range(1, self.RETRIES + 1):
+            if attempt > 1 and hasattr(stdin, "seek"):
+                stdin.seek(0)
+            try:
+                return _run(["ssh", *self.opts, self.target, command], **kwargs)
+            except subprocess.CalledProcessError as exc:
+                if exc.returncode != 255 or attempt == self.RETRIES:
+                    raise
+                print(f"[gitops] SSH connection to {self.target} failed; retrying ({attempt}/{self.RETRIES - 1})",
+                      flush=True)
+                time.sleep(2 * attempt)
+
+    def close(self):
+        _run(["ssh", *self.opts, "-O", "exit", self.target], check=False,
+             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.rmtree(self.control_dir, ignore_errors=True)
 
 
 BUILDER_DEFAULTS = {
@@ -317,6 +348,7 @@ def build_and_push(host_data, artifact_path: Path, image: str, tag: str) -> str:
         result = json.loads(node.run(cmd["result"], capture_output=True, text=True).stdout)
     finally:
         node.run(cmd["cleanup"], check=False)
+        node.close()
     digest = result.get("containerimage.digest", "")
     if not DIGEST_RE.fullmatch(digest):
         raise RuntimeError(f"Build finished without a pushed digest: {result}")
@@ -399,6 +431,9 @@ def _gitops_deploy(context):
     gitops_hosts = [data for _, data in hosts if _get(data, "deployment_strategy") == GITOPS]
     if not gitops_hosts:
         return
+    if len(gitops_hosts) == len(hosts):
+        # No remote pyinfra hooks run for gitops hosts: don't connect at all.
+        context["skip_remote"] = "gitops deploys from this machine"
     if len(gitops_hosts) > 1:
         raise ValueError("gitops inventories deploy one app per environment; use one host")
     host_data = gitops_hosts[0]

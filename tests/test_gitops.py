@@ -201,6 +201,9 @@ class FakeNode:
         stdout = '{"containerimage.digest": "%s"}' % NEW if command.endswith("result.json") else ""
         return subprocess.CompletedProcess(command, 0, stdout=stdout)
 
+    def close(self):
+        self.commands.append("<close>")
+
 
 class BuilderTests(unittest.TestCase):
     def setUp(self):
@@ -228,7 +231,8 @@ class BuilderTests(unittest.TestCase):
     def test_shared_build_sequence(self):
         node = FakeNode()
         self.assertEqual(self.build(node), NEW)
-        self.assertTrue(all(c.startswith("sudo -u builder ") for c in node.commands), node.commands)
+        self.assertEqual(node.commands[-1], "<close>")
+        self.assertTrue(all(c.startswith("sudo -u builder ") for c in node.commands[:-1]), node.commands)
         self.assertFalse(any("systemd-run" in c for c in node.commands))
         steps = ["mkdir -p", "tar --no-same-owner", "umask 077", "buildctl --addr", "/result.json", "rm -rf --"]
         positions = [next(i for i, c in enumerate(node.commands) if step in c and (step != "/result.json" or c.endswith(step))) for step in steps]
@@ -242,14 +246,64 @@ class BuilderTests(unittest.TestCase):
         node = FakeNode(fail_on=" build ")
         with self.assertRaises(subprocess.CalledProcessError):
             self.build(node)
-        self.assertTrue(node.commands[-1].startswith("sudo -u builder rm -rf -- /var/lib/techco-buildkit/jobs/"))
+        self.assertTrue(node.commands[-2].startswith("sudo -u builder rm -rf -- /var/lib/techco-buildkit/jobs/"))
+        self.assertEqual(node.commands[-1], "<close>")
 
     def test_temporary_mode_starts_its_own_daemon(self):
         node = FakeNode()
         self.assertEqual(self.build(node, mode="temporary"), NEW)
         self.assertTrue(any("systemd-run" in c for c in node.commands))
         self.assertTrue(any("/data/djaploy-build/docms-prod-abc1234-" in c for c in node.commands))
-        self.assertIn("systemctl stop djaploy-buildkit-", node.commands[-1])
+        self.assertIn("systemctl stop djaploy-buildkit-", node.commands[-2])
+
+
+class BuildNodeConnectionTests(unittest.TestCase):
+    def setUp(self):
+        self.node = gitops.BuildNode(host())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.node.control_dir, ignore_errors=True))
+        patcher = patch.object(gitops.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_one_multiplexed_connection_with_keepalives(self):
+        self.assertTrue(self.node.control_dir.startswith("/tmp/djaploy-ssh-"))
+        self.assertIn(f"ControlPath={self.node.control_dir}/%C", self.node.opts)
+        for opt in ("ControlMaster=auto", "ServerAliveInterval=15", "ConnectTimeout=20"):
+            self.assertIn(opt, self.node.opts)
+
+    def test_connection_failure_is_retried_and_input_rewound(self):
+        failures = [subprocess.CalledProcessError(255, "ssh")]
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(kwargs["stdin"].read())
+            if failures:
+                raise failures.pop()
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with tempfile.TemporaryFile() as archive, patch.object(gitops, "_run", side_effect=fake_run):
+            archive.write(b"source")
+            archive.seek(0)
+            self.node.run("tar -xzf -", stdin=archive)
+        self.assertEqual(seen, [b"source", b"source"])
+
+    def test_command_failure_is_not_retried(self):
+        with patch.object(gitops, "_run", side_effect=subprocess.CalledProcessError(1, "ssh")) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.node.run("false")
+        self.assertEqual(run.call_count, 1)
+
+    def test_gives_up_after_retries(self):
+        with patch.object(gitops, "_run", side_effect=subprocess.CalledProcessError(255, "ssh")) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.node.run("true")
+        self.assertEqual(run.call_count, gitops.BuildNode.RETRIES)
+
+    def test_close_stops_master_and_removes_socket_dir(self):
+        with patch.object(gitops, "_run") as run:
+            self.node.close()
+        self.assertIn("-O", run.call_args[0][0])
+        self.assertFalse(Path(self.node.control_dir).exists())
 
 
 def git(cwd, *args):
@@ -310,6 +364,7 @@ class HookTests(unittest.TestCase):
             context = self.context([("extor", host())])
             gitops._gitops_deploy(context)
         self.assertEqual(calls, ["check", "build", "secret", "pin", "sync"])
+        self.assertTrue(context["skip_remote"])
         self.assertEqual(context["gitops"], {"image": f"{IMAGE}@{NEW}", "revision": "f" * 40})
 
     def test_build_failure_publishes_nothing(self):
@@ -326,6 +381,14 @@ class HookTests(unittest.TestCase):
             gitops._gitops_deploy(self.context([("web", host(deployment_strategy="zero_downtime"))]))
         check.assert_not_called()
 
+    def test_mixed_inventory_keeps_remote_stage(self):
+        with patch.object(gitops, "check_infra_repo", return_value="main"), \
+             patch.object(gitops, "build_and_push", return_value=NEW), patch.object(gitops, "apply_env_secret"), \
+             patch.object(gitops, "publish_pin", return_value="f" * 40), patch.object(gitops, "sync_and_wait"):
+            context = self.context([("extor", host()), ("web", host(deployment_strategy="zero_downtime"))])
+            gitops._gitops_deploy(context)
+        self.assertNotIn("skip_remote", context)
+
     def test_one_host_only(self):
         with self.assertRaisesRegex(ValueError, "one host"):
             gitops._gitops_deploy(self.context([("a", host()), ("b", host())]))
@@ -333,3 +396,25 @@ class HookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunCommandSkipTests(unittest.TestCase):
+    def test_skip_remote_runs_no_pyinfra_but_postcommand(self):
+        from djaploy import deploy
+        called = []
+
+        def fake_call_hook(name, context):
+            called.append(name)
+            if name == "deploy:precommand":
+                context["skip_remote"] = "gitops deploys from this machine"
+            return []
+
+        context = {"command": "deploy", "env": "dev", "command_file": "x", "inventory_file": "inv.py",
+                   "pyinfra_data": {}}
+        with patch("djaploy.hooks.discover_hooks"), patch("djaploy.hooks.call_hook", side_effect=fake_call_hook), \
+             patch.object(deploy, "_run_pyinfra") as pyinfra, patch.object(deploy, "_preprocess_inventory") as pre:
+            deploy.run_command(context)
+        pyinfra.assert_not_called()
+        pre.assert_not_called()
+        self.assertTrue(context["success"])
+        self.assertEqual(called, ["deploy:precommand", "precommand", "deploy:postcommand", "postcommand"])
