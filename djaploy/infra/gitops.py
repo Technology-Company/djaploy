@@ -7,8 +7,9 @@ pins its digest in the GitOps repository and syncs the Argo CD application:
 
     deploy:precommand (local, after the artifact is created)
       1. check the GitOps checkout is clean and up to date
-      2. build the artifact on the build node with a temporary BuildKit daemon
-         and push it with a one-hour registry token for the app's namespace
+      2. build the artifact with the build node's BuildKit (its shared rootless
+         service, or a temporary daemon) and push it with a one-hour registry
+         token for the app's namespace
       3. apply the env Secret (SECRET_KEY + data, e.g. from OpSecret)
       4. pin the pushed digest in the GitOps repository, commit and push
       5. sync that commit in Argo CD and wait until Synced and Healthy
@@ -29,9 +30,11 @@ HostConfig fields used: app_name, manage_py_path, secret_key, data, and
         "kubeconfig": "~/.kube/techco-me.kubeconfig",    # default: $KUBECONFIG
         "env_secret": "docms-env",                       # default: <app_name>-env; None: leave Secrets alone
         "settings_module": "docms.settings.production",  # Dockerfile build arg
-        "builder": {                                     # build node layout (defaults shown)
-            "buildkit_dir": "/opt/techco-buildkit",
-            "work_dir": "/data/djaploy-build",
+        "builder": {                                     # defaults shown
+            "mode": "shared",                            # node's BuildKit service; or "temporary"
+            "user": "builder",
+            "socket": "unix:///run/techco-buildkit/buildkitd.sock",
+            "work_dir": "/var/lib/techco-buildkit/jobs",
         },
         "registry_audience": "registry.techco.fi",
         "sync_timeout": 900,                             # seconds to wait for Argo CD
@@ -216,19 +219,69 @@ class BuildNode:
         return _run(["ssh", *self.opts, self.target, command], **kwargs)
 
 
+BUILDER_DEFAULTS = {
+    # The build node's always-running rootless BuildKit service (hetzner-management
+    # kubernetes/builder on Monster): jobs run as its user against its socket.
+    "shared": {"user": "builder", "buildkit_dir": "/opt/techco-buildkit",
+               "socket": "unix:///run/techco-buildkit/buildkitd.sock",
+               "work_dir": "/var/lib/techco-buildkit/jobs"},
+    # A root BuildKit daemon started for each build (systemd-run), as djaploy 1.6.0 did.
+    "temporary": {"buildkit_dir": "/opt/techco-buildkit", "work_dir": "/data/djaploy-build"},
+}
+
+
+def builder_conf(host_data) -> dict:
+    given = dict(_get(conf_of(host_data), "builder", {}))
+    mode = given.get("mode", "shared")
+    if mode not in BUILDER_DEFAULTS:
+        raise ValueError(f'gitops_conf["builder"]["mode"] must be "shared" or "temporary", not {mode!r}')
+    return {"mode": mode, **BUILDER_DEFAULTS[mode], **given}
+
+
+def build_commands(builder: dict, work: str, run_id: str, ns: str) -> dict:
+    """Shell commands for one build job on the build node."""
+    q = shlex.quote
+    buildkit = builder["buildkit_dir"]
+    if builder["mode"] == "shared":
+        as_user = f"sudo -u {q(builder['user'])}"
+        sock = builder["socket"]
+        return {
+            "prepare": f"{as_user} mkdir -p {work}/source {work}/auth",
+            "extract": f"{as_user} tar --no-same-owner -xzf - -C {work}/source",
+            "auth": f"{as_user} sh -c {q(f'umask 077; cat > {work}/auth/config.json')}",
+            "start": None,
+            "ready": None,
+            "build": f"{as_user} env DOCKER_CONFIG={work}/auth {buildkit}/buildctl --addr {q(sock)} build",
+            "result": f"{as_user} cat {work}/result.json",
+            "cleanup": f"{as_user} rm -rf -- {work}",
+        }
+    unit = f"djaploy-buildkit-{run_id}"
+    sock = f"unix:///run/{unit}/buildkitd.sock"
+    cache = f"{builder['work_dir']}/cache-{ns}"
+    return {
+        "prepare": f"sudo install -d -m 700 {work}/source {work}/auth {cache} /run/{unit}",
+        "extract": f"sudo tar -xzf - -C {work}/source",
+        "auth": f"sudo sh -c {q(f'umask 077; cat > {work}/auth/config.json')}",
+        "start": (f"sudo systemd-run --collect --unit={unit} --property=UMask=0077 {buildkit}/buildkitd "
+                  f"--addr {sock} --root {cache} --oci-worker=true --containerd-worker=false "
+                  f"--oci-worker-binary {buildkit}/buildkit-runc"),
+        "ready": f"sudo {buildkit}/buildctl --addr {sock} debug workers",
+        "build": f"sudo env DOCKER_CONFIG={work}/auth {buildkit}/buildctl --addr {sock} build",
+        "result": f"sudo cat {work}/result.json",
+        "cleanup": f"sudo systemctl stop {unit} 2>/dev/null; sudo rm -rf -- {work}",
+    }
+
+
 def build_and_push(host_data, artifact_path: Path, image: str, tag: str) -> str:
     """Build on the build node and push; return the pushed manifest digest."""
     conf = conf_of(host_data)
     ns = namespace(host_data)
-    builder = dict(_get(conf, "builder", {}))
-    buildkit = builder.get("buildkit_dir", "/opt/techco-buildkit")
+    builder = builder_conf(host_data)
     run_id = f"{ns}-{tag}-{uuid.uuid4().hex[:8]}"
-    work = f"{builder.get('work_dir', '/data/djaploy-build')}/{run_id}"
-    cache = f"{builder.get('work_dir', '/data/djaploy-build')}/cache-{ns}"
-    unit = f"djaploy-buildkit-{run_id}"
-    sock = f"unix:///run/{unit}/buildkitd.sock"
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", run_id):
         raise ValueError(f"Unsafe build id {run_id!r}")
+    work = f"{builder['work_dir']}/{run_id}"
+    cmd = build_commands(builder, work, run_id, ns)
     node = BuildNode(host_data)
 
     token = _run(kubectl(host_data) + ["-n", ns, "create", "token", "registry-builder",
@@ -242,31 +295,28 @@ def build_and_push(host_data, artifact_path: Path, image: str, tag: str) -> str:
     if _get(conf, "settings_module"):
         args.append(f"--opt build-arg:SETTINGS_MODULE={shlex.quote(conf['settings_module'])}")
 
-    print(f"[gitops] Building {image}:{tag} on {node.target}", flush=True)
-    node.run(f"sudo install -d -m 700 {work}/source {work}/auth {cache} /run/{unit}")
+    print(f"[gitops] Building {image}:{tag} on {node.target} ({builder['mode']} BuildKit)", flush=True)
+    node.run(cmd["prepare"])
     try:
         with open(artifact_path, "rb") as archive:
-            node.run(f"sudo tar -xzf - -C {work}/source", stdin=archive)
-        node.run(f"sudo tee {work}/auth/config.json >/dev/null", input=docker_config, text=True,
-                 stdout=subprocess.DEVNULL)
-        node.run(f"sudo systemd-run --collect --unit={unit} --property=UMask=0077 {buildkit}/buildkitd "
-                 f"--addr {sock} --root {cache} --oci-worker=true --containerd-worker=false "
-                 f"--oci-worker-binary {buildkit}/buildkit-runc", stdout=subprocess.DEVNULL)
-        for _ in range(60):
-            ready = node.run(f"sudo {buildkit}/buildctl --addr {sock} debug workers",
-                             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if ready.returncode == 0:
-                break
-            time.sleep(0.5)
-        else:
-            raise RuntimeError("BuildKit did not become ready on the build node")
-        node.run(f"sudo env DOCKER_CONFIG={work}/auth {buildkit}/buildctl --addr {sock} build --progress=plain "
-                 f"--frontend dockerfile.v0 --local context={work}/source --local dockerfile={work}/source "
+            node.run(cmd["extract"], stdin=archive)
+        node.run(cmd["auth"], input=docker_config, text=True, stdout=subprocess.DEVNULL)
+        if cmd["start"]:
+            node.run(cmd["start"], stdout=subprocess.DEVNULL)
+            for _ in range(60):
+                ready = node.run(cmd["ready"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if ready.returncode == 0:
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("BuildKit did not become ready on the build node")
+        node.run(f"{cmd['build']} --progress=plain --frontend dockerfile.v0 "
+                 f"--local context={work}/source --local dockerfile={work}/source "
                  f"{' '.join(args)} --output type=image,name={image}:{tag},push=true "
                  f"--metadata-file {work}/result.json")
-        result = json.loads(node.run(f"sudo cat {work}/result.json", capture_output=True, text=True).stdout)
+        result = json.loads(node.run(cmd["result"], capture_output=True, text=True).stdout)
     finally:
-        node.run(f"sudo systemctl stop {unit} 2>/dev/null; sudo rm -rf {work}", check=False)
+        node.run(cmd["cleanup"], check=False)
     digest = result.get("containerimage.digest", "")
     if not DIGEST_RE.fullmatch(digest):
         raise RuntimeError(f"Build finished without a pushed digest: {result}")

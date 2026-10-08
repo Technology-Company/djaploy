@@ -256,11 +256,11 @@ cluster. The inventory host is the **build node**.
 
 ```python
 HostConfig(
-    "extor",                                  # build node: a cluster node with BuildKit
-    ssh_hostname="65.109.151.140",
+    "monster",                                # build node: runs the BuildKit service
+    ssh_hostname="167.235.97.139",
     ssh_user="janitor",                       # needs passwordless sudo
     ssh_key=OpFilePath("/Infra/SSH Key/private key?ssh-format=openssh"),
-    ssh_known_hosts_file=OpFilePath("/Infra/extor/SSH Identity"),
+    ssh_known_hosts_file="~/src/hetzner-management/servers/monster/known_hosts-167.235.97.139",
     deployment_strategy="gitops",
     app_name="docms",
     manage_py_path="docms/manage.py",
@@ -282,11 +282,15 @@ HostConfig(
 `deploy` (all from the deploying machine, after the artifact is created):
 
 1. checks the GitOps checkout has no local edits to the manifest and pulls it;
-2. builds the artifact on the build node with a temporary BuildKit daemon
-   (`/opt/techco-buildkit`, root-only socket, cache under `/data/djaploy-build`)
-   and pushes `<image>:<commit>` using a one-hour token for the namespace's
+2. builds the artifact with the build node's BuildKit and pushes
+   `<image>:<commit>` using a one-hour token for the namespace's
    `registry-builder` service account; build args `MANAGE_PY` and
-   `SETTINGS_MODULE`, as for k3s;
+   `SETTINGS_MODULE`, as for k3s. By default (`builder.mode="shared"`) the job
+   runs as the `builder` user against the node's always-running rootless
+   BuildKit service (`/run/techco-buildkit/buildkitd.sock`, jobs under
+   `/var/lib/techco-buildkit/jobs`, shared cache); `builder.mode="temporary"`
+   instead starts a root BuildKit daemon for the one build (djaploy 1.6.0's
+   behaviour). The job directory and credentials are removed afterwards;
 3. applies the env Secret (`secret_key` + scalar `data`), so 1Password stays
    the source of secrets and none are in Git;
 4. rewrites the digest pin in the manifest (a kustomize `images:` entry or

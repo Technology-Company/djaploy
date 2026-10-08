@@ -188,6 +188,70 @@ class BuildNodeTests(unittest.TestCase):
         self.assertEqual(node.opts[node.opts.index("-i") + 1], "/tmp/key")
 
 
+class FakeNode:
+    """Records build-node commands; answers result.json with a digest."""
+
+    def __init__(self, fail_on=None):
+        self.commands, self.fail_on, self.target = [], fail_on, "janitor@node"
+
+    def run(self, command, **kwargs):
+        self.commands.append(command)
+        if self.fail_on and self.fail_on in command:
+            raise subprocess.CalledProcessError(1, command)
+        stdout = '{"containerimage.digest": "%s"}' % NEW if command.endswith("result.json") else ""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+
+class BuilderTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+        tmp.close()
+        self.addCleanup(Path(tmp.name).unlink)
+        self.artifact = Path(tmp.name)
+
+    def build(self, node, **builder):
+        conf = {**host()["gitops_conf"], **({"builder": builder} if builder else {})}
+        token = subprocess.CompletedProcess([], 0, stdout="tok\n")
+        with patch.object(gitops, "BuildNode", return_value=node), patch.object(gitops, "_run", return_value=token):
+            return gitops.build_and_push(host(gitops_conf=conf), self.artifact, IMAGE, "abc1234")
+
+    def test_defaults_to_shared_builder(self):
+        b = gitops.builder_conf(host())
+        self.assertEqual(b["mode"], "shared")
+        self.assertEqual(b["user"], "builder")
+        self.assertEqual(b["socket"], "unix:///run/techco-buildkit/buildkitd.sock")
+
+    def test_invalid_mode(self):
+        with self.assertRaisesRegex(ValueError, "shared"):
+            gitops.builder_conf(host(gitops_conf={**host()["gitops_conf"], "builder": {"mode": "docker"}}))
+
+    def test_shared_build_sequence(self):
+        node = FakeNode()
+        self.assertEqual(self.build(node), NEW)
+        self.assertTrue(all(c.startswith("sudo -u builder ") for c in node.commands), node.commands)
+        self.assertFalse(any("systemd-run" in c for c in node.commands))
+        steps = ["mkdir -p", "tar --no-same-owner", "umask 077", "buildctl --addr", "/result.json", "rm -rf --"]
+        positions = [next(i for i, c in enumerate(node.commands) if step in c and (step != "/result.json" or c.endswith(step))) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+        build = next(c for c in node.commands if " build " in c)
+        self.assertIn("/var/lib/techco-buildkit/jobs/docms-prod-abc1234-", build)
+        self.assertIn(f"name={IMAGE}:abc1234,push=true", build)
+        self.assertIn("build-arg:SETTINGS_MODULE=docms.settings.production", build)
+
+    def test_shared_cleanup_after_failed_build(self):
+        node = FakeNode(fail_on=" build ")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.build(node)
+        self.assertTrue(node.commands[-1].startswith("sudo -u builder rm -rf -- /var/lib/techco-buildkit/jobs/"))
+
+    def test_temporary_mode_starts_its_own_daemon(self):
+        node = FakeNode()
+        self.assertEqual(self.build(node, mode="temporary"), NEW)
+        self.assertTrue(any("systemd-run" in c for c in node.commands))
+        self.assertTrue(any("/data/djaploy-build/docms-prod-abc1234-" in c for c in node.commands))
+        self.assertIn("systemctl stop djaploy-buildkit-", node.commands[-1])
+
+
 def git(cwd, *args):
     return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
 
